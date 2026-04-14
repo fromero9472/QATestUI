@@ -1,0 +1,32 @@
+Feature: {{featureName}}
+
+  Background:
+    * url baseUrl
+
+{{#each scenarios}}
+  Scenario: {{name}}
+    # ── Request ────────────────────────────────────────────────────
+    Given path '{{../endpoint}}'
+{{#each params}}
+    And param {{key}} = '{{value}}'
+{{/each}}
+{{#each headers}}
+    And header {{key}} = '{{value}}'
+{{/each}}
+{{#if body}}
+    And request
+    """
+    {{{body}}}
+    """
+{{/if}}
+
+    # ── Execution ──────────────────────────────────────────────────
+    When method {{method}}
+
+    # ── Assertions ────────────────────────────────────────────────
+    Then status {{expectedStatus}}
+{{#each assertions}}
+    And match response.{{field}} {{{operator}}}{{#if value}} {{{value}}}{{/if}}
+{{/each}}
+
+{{/each}}
