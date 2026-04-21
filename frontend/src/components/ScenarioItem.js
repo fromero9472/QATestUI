@@ -60,7 +60,7 @@ export default function ScenarioItem({
   scenario, index, total,
   onScenarioChange, onRemove,
   onAddListItem, onRemoveListItem, onChangeListItem,
-  emptyParam, emptyHeader, emptyAssertion,
+  emptyParam, emptyHeader, emptyAssertion, emptyDbAssertion,
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const si = index;
@@ -225,6 +225,84 @@ export default function ScenarioItem({
             onClick={() => onAddListItem(si, 'assertions', emptyAssertion)}>
             ＋ Agregar validación
           </button>
+
+          {/* ── DB Validation ── */}
+          <p className="scenario-section-title">🗄️ Validación de base de datos
+            <span className="section-hint">DbUtils.queryOne antes/después del request</span>
+          </p>
+          <div className="form-group toggle-row">
+            <label className="toggle-label">
+              <input type="checkbox"
+                checked={!!scenario.enableDb}
+                onChange={e => onScenarioChange(si, 'enableDb', e.target.checked)} />
+              <span>Habilitar validación de DB en este escenario</span>
+            </label>
+          </div>
+          {scenario.enableDb && (
+            <>
+              <div className="grid-3">
+                <div className="form-group" style={{ gridColumn: 'span 2' }}>
+                  <label>Tabla (schema.tabla)</label>
+                  <input className="form-control" type="text"
+                    value={scenario.dbTable || ''}
+                    onChange={e => onScenarioChange(si, 'dbTable', e.target.value)}
+                    placeholder="Ej: CPAY_CREDIT_PROFILE.LIMITS" />
+                </div>
+                <div className="form-group">
+                  <label>Columnas a seleccionar</label>
+                  <input className="form-control" type="text"
+                    value={scenario.dbColumns || ''}
+                    onChange={e => onScenarioChange(si, 'dbColumns', e.target.value)}
+                    placeholder="Ej: STATUS, AMOUNT" />
+                </div>
+              </div>
+              <div className="form-group">
+                <label>Filtro WHERE</label>
+                <input className="form-control" type="text"
+                  value={scenario.dbFilter || ''}
+                  onChange={e => onScenarioChange(si, 'dbFilter', e.target.value)}
+                  placeholder="Ej: CUIT = '20123456789'" />
+              </div>
+              <p className="section-sublabel">Validaciones post-request sobre la DB:</p>
+              <div className="assertions-list">
+                {(scenario.dbAssertions || []).map((dba, dai) => (
+                  <div key={dba.id} className="assertion-row">
+                    <span className="assertion-prefix">dbAfter.</span>
+                    <input className="form-control assertion-field" type="text"
+                      placeholder="columna"
+                      value={dba.column}
+                      onChange={e => onChangeListItem(si, 'dbAssertions', dai, 'column', e.target.value)} />
+                    <span className="kv-sep">==</span>
+                    <input className="form-control assertion-value" type="text"
+                      placeholder="valor esperado"
+                      value={dba.value}
+                      onChange={e => onChangeListItem(si, 'dbAssertions', dai, 'value', e.target.value)} />
+                    {(scenario.dbAssertions || []).length > 1 && (
+                      <button type="button" className="btn btn--sm kv-remove"
+                        onClick={() => onRemoveListItem(si, 'dbAssertions', dai)}>✕</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <button type="button" className="btn btn--ghost btn--sm btn--add-kv"
+                onClick={() => onAddListItem(si, 'dbAssertions', emptyDbAssertion)}>
+                ＋ Agregar validación DB
+              </button>
+            </>
+          )}
+
+          {/* ── OCP Evidence ── */}
+          <p className="scenario-section-title">🔴 Evidencia de logs OCP
+            <span className="section-hint">Captura logs del pod en OpenShift</span>
+          </p>
+          <div className="form-group toggle-row">
+            <label className="toggle-label">
+              <input type="checkbox"
+                checked={!!scenario.enableOcpEvidence}
+                onChange={e => onScenarioChange(si, 'enableOcpEvidence', e.target.checked)} />
+              <span>Capturar evidencia de logs OCP en este escenario</span>
+            </label>
+          </div>
 
         </div>
       )}

@@ -46,53 +46,180 @@ const featureValidation = [
     .withMessage(`El operador de assertion debe ser uno de: ${VALID_OPERATORS.join(', ')}`),
 ];
 
-// ─── System prompt para Groq ───────────────────────────────────────────────
-const SYSTEM_PROMPT = `Sos un asistente experto en QA y testing de APIs REST.
-Tu tarea es analizar texto de criterios de aceptación (formato Dado/Cuando/Entonces o Given/When/Then)
-y/o datos de prueba, y extraer información estructurada para generar tests con Karate DSL.
+// ─── System prompt para Groq ───────────────────────────────────────────
+const SYSTEM_PROMPT = `Sos un asistente experto en QA y testing de APIs REST con Karate DSL.
+Tu tarea es analizar texto libre con criterios de aceptación, descripciones funcionales o datos de prueba,
+y extraer información estructurada para generar escenarios de test en Karate DSL.
 
-IMPORTANTE: El texto puede contener UNO o VARIOS criterios de aceptación. Debés detectar TODOS y generar un escenario por cada uno.
-Un criterio nuevo comienza con "Dado" / "Given" o con una nueva sección numerada / separada visualmente.
-
-Devolvé SIEMPRE y ÚNICAMENTE un JSON válido con esta estructura exacta (sin texto adicional, sin markdown):
+Devolvé SIEMPRE y ÚNICAMENTE un JSON válido con esta estructura exacta (sin texto adicional, sin markdown, sin bloques de código):
 
 {
-  "featureName": "string (nombre del feature en PascalCase, sin espacios)",
-  "endpoint": "string (path del endpoint, ej: /v1/client/data)",
+  "featureName": "string",
+  "endpoint": "string",
+  "baseUrl": "string",
+  "enableOcp": false,
+  "ocpToken": "",
+  "namespace": "",
   "scenarios": [
     {
-      "name": "string (descripción del escenario, máximo 120 chars)",
+      "name": "string",
       "method": "GET|POST|PUT|DELETE|PATCH",
       "expectedStatus": 200,
       "assertions": [
-        {
-          "field": "string (campo del response, puede tener notación de punto ej: data.hasClaroPay)",
-          "operator": "== true|== false|== null|!= null|==|!=|contains|matches",
-          "value": "string (solo si el operador es ==, !=, contains o matches, sino vacío)"
-        }
+        { "field": "string", "operator": "== true|== false|== null|!= null|==|!=|contains|matches", "value": "string" }
       ],
-      "detectedBody": "string (JSON del request body si aplica, sino null)",
-      "detectedParams": [
-        { "key": "string", "value": "string" }
-      ]
+      "detectedBody": "string o null",
+      "detectedParams": [ { "key": "string", "value": "string" } ],
+      "enableDb": false,
+      "dbTable": "",
+      "dbColumns": "",
+      "dbFilter": "",
+      "dbAssertions": [],
+      "enableOcpEvidence": false
     }
   ]
 }
 
-Reglas importantes:
-- Generá UN objeto en el array "scenarios" por CADA criterio de aceptación encontrado en el texto
-- Para campos booleanos del response usá: == true, == false
+═══════════════════════════════════════════════════
+REGLA 1 — featureName (MUY IMPORTANTE)
+═══════════════════════════════════════════════════
+Seguí este orden estricto:
+1. Si el texto tiene "Feature: ALGO" → usá "ALGO" tal cual
+2. Si el texto menciona un ticket ID con patrón LETRAS-NUMEROS (ej: PCP-54734, JIRA-123, CLA-999, CLP-001) → usá ese ID exacto como featureName
+3. Si no hay ticket, generá un nombre PascalCase descriptivo sin espacios
+
+Ejemplos:
+- "estoy trabajando con la tarea PCP-54734" → featureName = "PCP-54734"
+- "Feature: ValidarLogin" → featureName = "ValidarLogin"
+- Sin ticket → featureName = "HistoryCreditProfileBatch"
+
+═══════════════════════════════════════════════════
+REGLA 2 — baseUrl y endpoint
+═══════════════════════════════════════════════════
+- Si el texto contiene una URL completa (https://... o http://...), extraé:
+  · baseUrl = todo hasta el primer path component (sin trailing slash)
+  · endpoint = el path después del host (ej: /startBatch, /v1/client/data)
+- Si el texto tiene "GET /path" o "POST /path", extraé el método y el path
+- Si la URL no tiene path explícito pero el texto menciona un path separado, combiná ambos
+
+Ejemplo:
+  "https://history-credit-profile-batch-claropay-ar-desa.apps.osen02.claro.amx/\nget /startBatch"
+  → baseUrl = "https://history-credit-profile-batch-claropay-ar-desa.apps.osen02.claro.amx"
+  → endpoint = "/startBatch"
+
+═══════════════════════════════════════════════════
+REGLA 3 — Escenarios
+═══════════════════════════════════════════════════
+- Generá UN escenario por cada criterio de aceptación
+- Un criterio nuevo comienza con "Dado/Given", numeración, o separación visual
+- Si el texto pide "organizar una estrategia" sin criterios explícitos, diseñá vos los escenarios necesarios para cubrir el caso
+- Para campos booleanos: operador == true o == false
 - Para campos que deben existir: != null
-- Para campos que deben ser null: == null
-- Para mensajes de error específicos (ej: CLIENT_DATA_FOUND_OK, CLIENT_PAY_NOT_FOUND): usa == con el valor exacto en el campo "message" o "data.message"
-- Si hay un JSON de request en el texto, poné el contenido formateado en detectedBody del escenario correspondiente
-- Si hay datos de prueba (uuid, cuit, nim, etc.) con valores reales, ponelos en detectedParams del escenario correspondiente
-- Si el método es POST/PUT/PATCH los datos van en detectedBody, si es GET van en detectedParams
-- El featureName debe ser PascalCase sin espacios ni caracteres especiales
-- Analizá TODO el texto incluyendo la sección de datos de prueba si la hay
-- Si solo hay un criterio, igualmente devolvé el array "scenarios" con un solo elemento`;
+- Para mensajes exactos (ej: LIMIT_PAY_OK): operador == con ese valor en assertions
+- Si el método es POST/PUT/PATCH, los datos van en detectedBody (JSON string formateado)
+- Si el método es GET, los datos van en detectedParams
+- No inventes assertions de response si no hay información suficiente; dejá el array vacío
+
+═══════════════════════════════════════════════════
+REGLA 4 — Validación de Base de Datos (enableDb) — MUY IMPORTANTE
+═══════════════════════════════════════════════════
+Activá enableDb: true en un escenario cuando el texto mencione CUALQUIERA de estas palabras o conceptos:
+"tabla", "base de datos", "DB", "database", "validar en base", "verificar en base",
+"HISTORY", "origen", "destino", "transferencia de datos", "batch", "proceso batch",
+"se guarda", "se almacena", "se mueve", "se copia", "registro", "registros"
+
+Cuando enableDb es true:
+- dbTable: nombre de la tabla a consultar (SCHEMA.TABLA). Si hay dos tablas (origen y destino), priorizá la tabla DESTINO para la validación post-ejecución
+- dbColumns: columnas relevantes a seleccionar, o "*" si no se especifica
+- dbFilter: condición WHERE si se puede inferir del contexto, sino ""
+- dbAssertions: array de { "column": "nombre_columna", "value": "valor_esperado" } con las validaciones post-request
+
+ESTRATEGIA ESPECIAL PARA PROCESOS BATCH:
+Cuando el texto describe un proceso batch que mueve/copia datos de tabla A → tabla B:
+  · Creá 2 escenarios:
+    1. "Verificar estado DB antes del batch" — solo enableDb: true, dbTable = tabla ORIGEN, sin request HTTP (usá method GET, expectedStatus 200, assertions vacías, y en el nombre indicar que es pre-condición)
+    2. "Ejecutar batch y validar transferencia" — enableDb: true, dbTable = tabla DESTINO, con el request HTTP real
+  · En el escenario 2, dbAssertions debe validar que los datos llegaron a la tabla destino
+
+═══════════════════════════════════════════════════
+REGLA 5 — Evidencia OCP (enableOcpEvidence)
+═══════════════════════════════════════════════════
+Activá enableOcpEvidence: true (y enableOcp: true a nivel feature) cuando el texto mencione:
+"logs", "OpenShift", "OCP", "pod", "evidencia de logs", "validar logs", "servidor"
+Si se menciona un namespace o proyecto OpenShift, extraelo en "namespace".
+
+═══════════════════════════════════════════════════
+REGLA 6 — Inferencia de namespace desde baseUrl
+═══════════════════════════════════════════════════
+Si la baseUrl contiene un patrón como "servicio-claropay-ar-AMBIENTE.apps.osen02.claro.amx",
+el namespace probable es "claropay-ar-AMBIENTE" (ej: "claropay-ar-desa"). Ponelo en namespace.`;
 
 // ─── POST /parse-criteria (con IA Groq) ────────────────────────────────────
+// ─── Post-process: extracciones deterministas que no dependen de la IA ───────
+const postProcess = (parsed, originalText) => {
+  const text = originalText;
+
+  // ── 1. featureName ────────────────────────────────────────────────────────
+  // Prioridad: "Feature: ALGO" > ticket ID (LETRAS-NUMEROS) > lo que devolvió la IA
+  const featureLineMatch = text.match(/Feature:\s*(\S+)/i);
+  const ticketMatch      = text.match(/\b([A-Z]{2,10}-\d{3,6})\b/);
+  if (featureLineMatch) {
+    parsed.featureName = featureLineMatch[1].trim();
+  } else if (ticketMatch) {
+    parsed.featureName = ticketMatch[1];
+  }
+
+  // ── 2. baseUrl ────────────────────────────────────────────────────────────
+  // Extrae la primera URL completa del texto y quita trailing slash
+  const urlMatch = text.match(/https?:\/\/[^\s/]+/);
+  if (urlMatch) {
+    parsed.baseUrl = urlMatch[0].replace(/\/$/, '');
+
+    // Inferir namespace desde el subdominio (ej: claropay-ar-desa)
+    const nsMatch = parsed.baseUrl.match(/(claropay-ar-\w+)/);
+    if (nsMatch && !parsed.namespace) {
+      parsed.namespace = nsMatch[1];
+    }
+  }
+
+  // ── 3. endpoint ───────────────────────────────────────────────────────────
+  // Busca "GET /path", "POST /path", etc. como primera opción
+  const methodPathMatch = text.match(/\b(GET|POST|PUT|DELETE|PATCH)\s+(\/[^\s\n]*)/i);
+  if (methodPathMatch) {
+    parsed.endpoint = methodPathMatch[2].trim();
+  }
+
+  // ── 4. Tablas DB (SCHEMA.TABLA) ───────────────────────────────────────────
+  const tableMatches = [...text.matchAll(/\b([A-Z][A-Z0-9_]+\.[A-Z][A-Z0-9_]+)\b/g)].map(m => m[1]);
+  const uniqueTables  = [...new Set(tableMatches)];
+
+  // ── 5. enableDb override ──────────────────────────────────────────────────
+  const dbKeywords = /tabla|base de datos|\bDB\b|database|validar.*base|verificar.*base|HISTORY|batch|proceso batch|se guarda|se almacena|se mueve|se copia|registros?/i;
+  const needsDb    = dbKeywords.test(text) || uniqueTables.length > 0;
+
+  if (needsDb) {
+    parsed.scenarios = parsed.scenarios.map((s, idx) => {
+      const updated = { ...s, enableDb: true };
+
+      // Solo sobreescribir dbTable si la IA no lo puso
+      if (!updated.dbTable) {
+        if (uniqueTables.length === 1) {
+          updated.dbTable = uniqueTables[0];
+        } else if (uniqueTables.length >= 2) {
+          // Batch: primer escenario → tabla origen, último → tabla destino
+          updated.dbTable = idx === 0 ? uniqueTables[0] : uniqueTables[uniqueTables.length - 1];
+        }
+      }
+
+      if (!updated.dbColumns) updated.dbColumns = '*';
+
+      return updated;
+    });
+  }
+
+  return parsed;
+};
+
 app.post('/parse-criteria', async (req, res) => {
   const { text } = req.body;
   if (!text || !text.trim()) {
@@ -125,6 +252,9 @@ app.post('/parse-criteria', async (req, res) => {
     if (!jsonMatch) throw new Error('La IA no devolvió JSON válido');
 
     const parsed = JSON.parse(jsonMatch[0]);
+
+    // ── Post-proceso determinista (regex sobre el texto original) ──
+    postProcess(parsed, text);
 
     // Soporte para respuesta con "scenarios" (array) o "scenario" (legacy)
     if (!Array.isArray(parsed.scenarios)) {
@@ -160,9 +290,52 @@ app.post('/parse-criteria', async (req, res) => {
   }
 });
 
+// ─── Shared normalization helper ──────────────────────────────────────────────
+const OPS_WITHOUT_VALUE = ['!= null', '== null', '== true', '== false'];
+
+/**
+ * Returns true when a raw assertion value is a plain string literal that
+ * Karate DSL requires to be wrapped in single quotes (i.e. NOT a number,
+ * boolean keyword, null, or already-quoted string).
+ */
+const needsQuotes = (val) => {
+  if (!val || val === 'null' || val === 'true' || val === 'false') return false;
+  if (!isNaN(Number(val))) return false; // numeric literal
+  // Already wrapped in single or double quotes
+  if ((val.startsWith("'") && val.endsWith("'")) || (val.startsWith('"') && val.endsWith('"'))) return false;
+  return true; // plain string → needs Karate quotes
+};
+
+const normalizeScenarios = (scenarios) =>
+  scenarios.map((s) => ({
+    ...s,
+    method:  s.method.toUpperCase(),
+    params:  (s.params  || []).filter(p => p.key && p.key.trim()),
+    headers: (s.headers || []).filter(h => h.key && h.key.trim()),
+    body:    s.body && s.body.trim() ? s.body.trim() : null,
+    // DB fields
+    enableDb:    !!s.enableDb,
+    dbTable:     s.dbTable    || '',
+    dbColumns:   s.dbColumns  || '',
+    dbFilter:    s.dbFilter   || '',
+    dbAssertions: (s.dbAssertions || []).filter(a => a.column && a.column.trim()),
+    // OCP fields
+    enableOcpEvidence: !!s.enableOcpEvidence,
+    assertions: (s.assertions || [])
+      .filter(a => a.field && a.field.trim())
+      .map(a => {
+        const rawValue = OPS_WITHOUT_VALUE.includes(a.operator) ? null : (a.value || '');
+        const formattedValue = rawValue && needsQuotes(rawValue) ? `'${rawValue}'` : rawValue;
+        return {
+          field:    a.field.trim(),
+          operator: a.operator || '!= null',
+          value:    formattedValue,
+        };
+      }),
+  }));
+
 // ─── POST /generate-feature ────────────────────────────────────────────────────
 app.post('/generate-feature', featureValidation, (req, res) => {
-  // Validate input
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({
@@ -172,26 +345,18 @@ app.post('/generate-feature', featureValidation, (req, res) => {
   }
 
   try {
-    const { featureName, endpoint, scenarios } = req.body;
+    const { featureName, endpoint, scenarios, baseUrl, enableOcp, ocpToken, namespace } = req.body;
+    const normalizedScenarios = normalizeScenarios(scenarios);
 
-    const OPS_WITHOUT_VALUE = ['!= null', '== null', '== true', '== false'];
-
-    const normalizedScenarios = scenarios.map((s) => ({
-      ...s,
-      method:  s.method.toUpperCase(),
-      params:  (s.params  || []).filter(p => p.key && p.key.trim()),
-      headers: (s.headers || []).filter(h => h.key && h.key.trim()),
-      body:    s.body && s.body.trim() ? s.body.trim() : null,
-      assertions: (s.assertions || [])
-        .filter(a => a.field && a.field.trim())
-        .map(a => ({
-          field:    a.field.trim(),
-          operator: a.operator || '!= null',
-          value:    OPS_WITHOUT_VALUE.includes(a.operator) ? null : (a.value || ''),
-        })),
-    }));
-
-    const featureContent = featureTemplate({ featureName, endpoint, scenarios: normalizedScenarios });
+    const featureContent = featureTemplate({
+      featureName,
+      endpoint,
+      baseUrl:    baseUrl    || '',
+      enableOcp:  !!enableOcp,
+      ocpToken:   ocpToken   || '',
+      namespace:  namespace  || '',
+      scenarios:  normalizedScenarios,
+    });
 
     return res.status(200).json({ success: true, featureName, content: featureContent });
   } catch (err) {
@@ -206,42 +371,26 @@ app.post('/download-feature', featureValidation, (req, res) => {
   if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array().map(e => e.msg) });
 
   try {
-    const { featureName, endpoint, scenarios } = req.body;
+    const { featureName, endpoint, scenarios, baseUrl, enableOcp, ocpToken, namespace } = req.body;
+    const normalizedScenarios = normalizeScenarios(scenarios);
 
-    const OPS_WITHOUT_VALUE = ['!= null', '== null', '== true', '== false'];
+    const featureContent = featureTemplate({
+      featureName,
+      endpoint,
+      baseUrl:    baseUrl    || '',
+      enableOcp:  !!enableOcp,
+      ocpToken:   ocpToken   || '',
+      namespace:  namespace  || '',
+      scenarios:  normalizedScenarios,
+    });
 
-    const normalizedScenarios = scenarios.map((s) => ({
-      ...s,
-      method:  s.method.toUpperCase(),
-      params:  (s.params  || []).filter(p => p.key && p.key.trim()),
-      headers: (s.headers || []).filter(h => h.key && h.key.trim()),
-      body:    s.body && s.body.trim() ? s.body.trim() : null,
-      assertions: (s.assertions || [])
-        .filter(a => a.field && a.field.trim())
-        .map(a => ({
-          field:    a.field.trim(),
-          operator: a.operator || '!= null',
-          value:    OPS_WITHOUT_VALUE.includes(a.operator) ? null : (a.value || ''),
-        })),
-    }));
-
-    const featureContent = featureTemplate({ featureName, endpoint, scenarios: normalizedScenarios });
-
-    // Sanitize filename
     const safeFileName = featureName.replace(/[^a-z0-9_\-]/gi, '_');
-
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="${safeFileName}.feature"`
-    );
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFileName}.feature"`);
     return res.send(featureContent);
   } catch (err) {
     console.error('Error al descargar feature:', err);
-    return res.status(500).json({
-      success: false,
-      errors: ['Error interno al descargar el archivo .feature'],
-    });
+    return res.status(500).json({ success: false, errors: ['Error interno al descargar el archivo .feature'] });
   }
 });
 

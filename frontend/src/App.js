@@ -8,9 +8,10 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:3001'
 
 const uid = () => Date.now() + Math.random();
 
-export const emptyParam     = () => ({ id: uid(), key: '', value: '' });
-export const emptyHeader    = () => ({ id: uid(), key: '', value: '' });
-export const emptyAssertion = () => ({ id: uid(), field: '', operator: '!= null', value: '' });
+export const emptyParam       = () => ({ id: uid(), key: '', value: '' });
+export const emptyHeader      = () => ({ id: uid(), key: '', value: '' });
+export const emptyAssertion   = () => ({ id: uid(), field: '', operator: '!= null', value: '' });
+export const emptyDbAssertion = () => ({ id: uid(), column: '', value: '' });
 
 const emptyScenario = () => ({
   id: uid(),
@@ -21,11 +22,23 @@ const emptyScenario = () => ({
   body:       '',
   expectedStatus: 200,
   assertions: [emptyAssertion()],
+  // DB validation
+  enableDb:    false,
+  dbTable:     '',
+  dbColumns:   '',
+  dbFilter:    '',
+  dbAssertions: [emptyDbAssertion()],
+  // OCP evidence
+  enableOcpEvidence: false,
 });
 
 const initialForm = {
   featureName: '',
   endpoint: '',
+  baseUrl: '',
+  enableOcp: false,
+  ocpToken: '',
+  namespace: '',
   scenarios: [],
 };
 
@@ -89,12 +102,17 @@ export default function App() {
   const buildPayload = () => ({
     featureName: form.featureName,
     endpoint:    form.endpoint,
+    baseUrl:     form.baseUrl    || '',
+    enableOcp:   !!form.enableOcp,
+    ocpToken:    form.ocpToken   || '',
+    namespace:   form.namespace  || '',
     scenarios:   form.scenarios.map(({ id, ...s }) => ({
       ...s,
       expectedStatus: Number(s.expectedStatus),
-      params:     stripIds(s.params).filter(({ key }) => key.trim()),
-      headers:    stripIds(s.headers).filter(({ key }) => key.trim()),
-      assertions: stripIds(s.assertions).filter(({ field }) => field.trim()),
+      params:       stripIds(s.params).filter(({ key }) => key.trim()),
+      headers:      stripIds(s.headers).filter(({ key }) => key.trim()),
+      assertions:   stripIds(s.assertions).filter(({ field }) => field.trim()),
+      dbAssertions: stripIds(s.dbAssertions || []).filter(({ column }) => column.trim()),
     })),
   });
 
@@ -128,7 +146,6 @@ export default function App() {
   // ── Smart Fill: merge parsed criteria into form ─────────────────
   const handleSmartFill = (parsed) => {
     setForm((prev) => {
-      // Soporte para "scenarios" (array nuevo) o "scenario" (legacy)
       const rawScenarios = Array.isArray(parsed.scenarios)
         ? parsed.scenarios
         : parsed.scenario
@@ -159,6 +176,16 @@ export default function App() {
           assertions:     s.assertions?.length > 0
                             ? s.assertions.map(a => ({ id: uid(), field: a.field, operator: a.operator, value: a.value || '' }))
                             : [emptyAssertion()],
+          // DB
+          enableDb:    !!s.enableDb,
+          dbTable:     s.dbTable    || '',
+          dbColumns:   s.dbColumns  || '',
+          dbFilter:    s.dbFilter   || '',
+          dbAssertions: s.dbAssertions?.length > 0
+                          ? s.dbAssertions.map(a => ({ id: uid(), column: a.column, value: a.value || '' }))
+                          : [emptyDbAssertion()],
+          // OCP
+          enableOcpEvidence: !!s.enableOcpEvidence,
         };
       });
 
@@ -169,6 +196,10 @@ export default function App() {
       return {
         featureName: parsed.featureName || prev.featureName,
         endpoint:    parsed.endpoint    || prev.endpoint,
+        baseUrl:     parsed.baseUrl     || prev.baseUrl     || '',
+        enableOcp:   parsed.enableOcp   || prev.enableOcp   || false,
+        ocpToken:    parsed.ocpToken    || prev.ocpToken    || '',
+        namespace:   parsed.namespace   || prev.namespace   || '',
         scenarios:   isEmpty ? newScenarios : [...prev.scenarios, ...newScenarios],
       };
     });
@@ -229,6 +260,7 @@ export default function App() {
             emptyParam={emptyParam}
             emptyHeader={emptyHeader}
             emptyAssertion={emptyAssertion}
+            emptyDbAssertion={emptyDbAssertion}
             onSmartFill={handleSmartFill}
             onSubmit={handleSubmit}
           />

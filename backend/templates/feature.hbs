@@ -1,10 +1,31 @@
 Feature: {{featureName}}
 
   Background:
-    * url baseUrl
+    * url '{{baseUrl}}'
+{{#if enableOcp}}
+    * def OCP_API   = 'https://api.osen02.claro.amx:6443'
+    * def OCP_TOKEN = '{{ocpToken}}'
+    * def NAMESPACE = '{{namespace}}'
+    * configure ssl = true
+{{/if}}
 
 {{#each scenarios}}
+  # ══════════════════════════════════════════════════════════════════
   Scenario: {{name}}
+  # ══════════════════════════════════════════════════════════════════
+{{#if enableOcpEvidence}}
+    # ── Timestamp para evidencia de logs ───────────────────────────
+    * def logTs = java.time.Instant.now().toString()
+    * karate.log('Log capture desde: ' + logTs)
+
+{{/if}}
+{{#if enableDb}}
+    # ── Estado DB ANTES del request ────────────────────────────────
+    * def DbUtils = Java.type('utils.DbUtils')
+    * def dbBefore = DbUtils.queryOne("SELECT {{dbColumns}} FROM {{dbTable}} WHERE {{dbFilter}}")
+    * karate.log('DB ANTES: ' + dbBefore)
+
+{{/if}}
     # ── Request ────────────────────────────────────────────────────
     Given path '{{../endpoint}}'
 {{#each params}}
@@ -29,4 +50,36 @@ Feature: {{featureName}}
     And match response.{{field}} {{{operator}}}{{#if value}} {{{value}}}{{/if}}
 {{/each}}
 
+{{#if enableDb}}
+    # ── Estado DB DESPUÉS del request ──────────────────────────────
+    * def dbAfter = DbUtils.queryOne("SELECT {{dbColumns}} FROM {{dbTable}} WHERE {{dbFilter}}")
+    * karate.log('DB DESPUES: ' + dbAfter)
+{{#each dbAssertions}}
+    * match dbAfter.{{column}} == {{value}}
+{{/each}}
+
+{{/if}}
+{{#if enableOcpEvidence}}
+    # ── Evidencia de logs OCP ──────────────────────────────────────
+    * configure connectTimeout = 5000
+    * configure readTimeout    = 10000
+    * def safeOcpEvidence =
+      """
+      function() {
+        try {
+          var result = karate.call('classpath:features/ocp-evidence.feature',
+            { OCP_API: OCP_API, OCP_TOKEN: OCP_TOKEN, NAMESPACE: NAMESPACE, logTs: logTs });
+          return result;
+        } catch(e) {
+          karate.log('WARN: No se pudo obtener evidencia OCP -> ' + e.message);
+          return null;
+        }
+      }
+      """
+    * def ocpEvidence = safeOcpEvidence()
+    * if (ocpEvidence != null) karate.log('Pod: ' + ocpEvidence.podName)
+    * if (ocpEvidence != null) karate.log(ocpEvidence.logContent)
+    * if (ocpEvidence == null) karate.log('INFO: Evidencia OCP omitida (sin acceso al cluster).')
+
+{{/if}}
 {{/each}}

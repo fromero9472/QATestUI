@@ -1,36 +1,52 @@
-# ── QATestUI Start Script ──────────────────────────────────────────
-Write-Host ""
-Write-Host "  ⚡ QATestUI – Karate Feature Generator" -ForegroundColor Cyan
-Write-Host "  ─────────────────────────────────────" -ForegroundColor DarkGray
-Write-Host ""
-
+# QATestUI - Starter (back + front)
+# Uso: .\start.ps1
 $root = $PSScriptRoot
-
-# Install backend dependencies
-Write-Host "  [1/4] Instalando dependencias del backend..." -ForegroundColor Yellow
-Set-Location "$root\backend"
-npm install --silent
-Write-Host "        ✔ Backend listo" -ForegroundColor Green
-
-# Install frontend dependencies
-Write-Host "  [2/4] Instalando dependencias del frontend..." -ForegroundColor Yellow
-Set-Location "$root\frontend"
-npm install --silent
-Write-Host "        ✔ Frontend listo" -ForegroundColor Green
-
-# Start backend in background
-Write-Host "  [3/4] Iniciando backend en http://localhost:3001 ..." -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$root\backend'; node server.js" -WindowStyle Normal
+Clear-Host
+Write-Host ""
+Write-Host "  QATestUI - Karate Feature Generator" -ForegroundColor Cyan
+Write-Host "  Back + Front starter" -ForegroundColor DarkCyan
+Write-Host ""
+function Install-If-Needed {
+  param([string]$Dir, [string]$Label)
+  if (-not (Test-Path "$Dir\node_modules")) {
+    Write-Host "  [npm] Instalando dependencias de $Label..." -ForegroundColor Yellow
+    Push-Location $Dir
+    npm install --silent
+    Pop-Location
+    Write-Host "  [OK] $Label listo" -ForegroundColor Green
+  } else {
+    Write-Host "  [OK] $Label - dependencias ya instaladas" -ForegroundColor DarkGreen
+  }
+}
+# 1. Dependencias
+Install-If-Needed "$root\backend"  "Backend"
+Install-If-Needed "$root\frontend" "Frontend"
+Write-Host ""
+# 2. Backend en ventana separada
+Write-Host "  [>>] Iniciando Backend en http://localhost:3001 ..." -ForegroundColor Yellow
+$backendCmd = "Set-Location '$root\backend'; node server.js"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendCmd -WindowStyle Normal
 Start-Sleep -Seconds 2
-Write-Host "        ✔ Backend corriendo" -ForegroundColor Green
-
-# Start frontend
-Write-Host "  [4/4] Iniciando frontend en http://localhost:3000 ..." -ForegroundColor Yellow
+Write-Host "  [OK] Backend en marcha" -ForegroundColor Green
+# 3. Abrir navegador cuando el frontend este listo
+Write-Host "  [>>] Esperando frontend para abrir el navegador..." -ForegroundColor Yellow
+$browserScript = @"
+`$url = 'http://localhost:3000'
+for (`$i = 1; `$i -le 30; `$i++) {
+    Start-Sleep -Seconds 2
+    try {
+        Invoke-WebRequest `$url -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop | Out-Null
+        Start-Process `$url
+        exit
+    } catch {}
+}
+"@
+Start-Process powershell -ArgumentList "-NoExit", "-Command", $browserScript -WindowStyle Hidden
+# 4. Frontend en esta ventana
+Write-Host "  [>>] Iniciando Frontend en http://localhost:3000 ..." -ForegroundColor Yellow
 Write-Host ""
-Write-Host "  ✅ Todo listo. La app abrirá en tu navegador." -ForegroundColor Green
-Write-Host "     Presioná Ctrl+C para detener el frontend." -ForegroundColor DarkGray
+Write-Host "  Presiona Ctrl+C para detener el frontend." -ForegroundColor DarkGray
+Write-Host "  Cerra la ventana del backend para detenerlo." -ForegroundColor DarkGray
 Write-Host ""
-
 Set-Location "$root\frontend"
 npm start
-
