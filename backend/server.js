@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { body, validationResult } = require('express-validator');
 const Groq = require('groq-sdk');
+const axios = require('axios').default || require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -247,11 +248,27 @@ app.post('/parse-criteria', async (req, res) => {
     const raw = completion.choices[0]?.message?.content?.trim();
     if (!raw) throw new Error('Respuesta vacía de Groq');
 
-    // Extraer el JSON de la respuesta (por si la IA agrega texto extra)
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('La IA no devolvió JSON válido');
+    // Extraer el primer JSON objeto balanceado de la respuesta
+    const extractBalancedJson = (str) => {
+      const start = str.indexOf('{');
+      if (start === -1) return null;
+      let depth = 0, inString = false, escape = false;
+      for (let i = start; i < str.length; i++) {
+        const ch = str[i];
+        if (escape)          { escape = false; continue; }
+        if (ch === '\\')     { escape = true;  continue; }
+        if (ch === '"')      { inString = !inString; continue; }
+        if (inString)        continue;
+        if (ch === '{')      depth++;
+        else if (ch === '}') { depth--; if (depth === 0) return str.slice(start, i + 1); }
+      }
+      return null;
+    };
 
-    const parsed = JSON.parse(jsonMatch[0]);
+    const jsonStr = extractBalancedJson(raw);
+    if (!jsonStr) throw new Error('La IA no devolvió JSON válido');
+
+    const parsed = JSON.parse(jsonStr);
 
     // ── Post-proceso determinista (regex sobre el texto original) ──
     postProcess(parsed, text);
@@ -391,6 +408,181 @@ app.post('/download-feature', featureValidation, (req, res) => {
   } catch (err) {
     console.error('Error al descargar feature:', err);
     return res.status(500).json({ success: false, errors: ['Error interno al descargar el archivo .feature'] });
+  }
+});
+
+// ─── POST /confluence-test ─────────────────────────────────────────────────────
+app.post('/confluence-test', async (req, res) => {
+  const { baseUrl, email, token, authType } = req.body;
+  if (!baseUrl || !token) {
+    return res.status(400).json({ success: false, error: 'Faltan baseUrl y token' });
+  }
+
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (authType === 'bearer') {
+      headers['Authorization'] = `Bearer ${token}`;
+    } else {
+      headers['Authorization'] = `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`;
+    }
+
+    // Probamos con el endpoint de spaces que existe en Cloud y Server
+    await axios.get(`${baseUrl.replace(/\/$/, '')}/rest/api/space?limit=1`, {
+      headers,
+      timeout: 6000,
+    });
+
+    return res.json({ success: true, message: 'Conexión exitosa' });
+  } catch (err) {
+    const status = err?.response?.status;
+    if (status === 401) return res.status(401).json({ success: false, error: 'Credenciales inválidas (401 Unauthorized)' });
+    if (status === 403) return res.status(403).json({ success: false, error: 'Sin permisos (403 Forbidden)' });
+    if (status === 404) return res.status(404).json({ success: false, error: 'URL no encontrada (404). Verificá la Base URL' });
+    return res.status(500).json({ success: false, error: `No se pudo conectar: ${err.message}` });
+  }
+});
+
+// ─── POST /confluence-fetch ────────────────────────────────────────────────────
+app.post('/confluence-fetch', async (req, res) => {
+  const { baseUrl, email, token, authType, pageUrl } = req.body;
+  if (!baseUrl || !token || !pageUrl) {
+    return res.status(400).json({ success: false, error: 'Faltan parámetros' });
+  }
+
+  try {
+    const base = baseUrl.replace(/\/$/, '');
+    const headers = { 'Content-Type': 'application/json' };
+    if (authType === 'bearer') {
+      headers['Authorization'] = `Bearer ${token}`;
+    } else {
+      headers['Authorization'] = `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`;
+    }
+
+    // Extraer pageId de la URL
+    let pageId = null;
+    const byId    = pageUrl.match(/[?&]pageId=(\d+)/);
+    const byPath  = pageUrl.match(/\/pages\/(\d+)/);
+    if (byId)   pageId = byId[1];
+    if (byPath) pageId = byPath[1];
+
+    let apiUrl;
+    if (pageId) {
+      apiUrl = `${base}/rest/api/content/${pageId}?expand=body.storage,title`;
+    } else {
+      // Formato /display/SPACE/Titulo
+      const displayMatch = pageUrl.match(/\/display\/([^/?#]+)\/([^?#]+)/);
+      if (!displayMatch) {
+        return res.status(400).json({ success: false, error: 'No se pudo extraer el pageId de la URL. Usá la URL completa con ?pageId=XXXXX' });
+      }
+      const spaceKey = displayMatch[1];
+      const title    = decodeURIComponent(displayMatch[2].replace(/\+/g, ' '));
+      apiUrl = `${base}/rest/api/content?title=${encodeURIComponent(title)}&spaceKey=${spaceKey}&expand=body.storage`;
+    }
+
+    const response = await axios.get(apiUrl, { headers, timeout: 10000 });
+    const page = response.data?.results?.[0] || (response.data?.type ? response.data : null);
+
+    if (!page) {
+      return res.status(404).json({ success: false, error: 'Página no encontrada en Confluence' });
+    }
+
+    const htmlContent = page.body?.storage?.value || '';
+    const title       = page.title || 'Sin título';
+
+    // Convertir HTML de Confluence a texto plano legible
+    const plainText = htmlContent
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<\/li>/gi, '\n')
+      .replace(/<\/tr>/gi, '\n')
+      .replace(/<\/th>/gi, ' | ')
+      .replace(/<\/td>/gi, ' | ')
+      .replace(/<\/h[1-6]>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+    // Truncar a 6000 chars para no exceder el contexto de Groq
+    const MAX_CHARS = 6000;
+    const truncated = plainText.length > MAX_CHARS
+      ? plainText.slice(0, MAX_CHARS) + '\n\n[...contenido truncado para análisis...]'
+      : plainText;
+
+    const fullText = `${title}\n\n${truncated}`;
+
+    // Llamar a Groq con el mismo pipeline que /parse-criteria
+    if (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY === 'your_api_key_here') {
+      return res.status(503).json({ success: false, error: 'GROQ_API_KEY no configurada' });
+    }
+
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      temperature: 0.1,
+      max_tokens: 4096,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user',   content: fullText },
+      ],
+    });
+
+    const raw = completion.choices[0]?.message?.content?.trim();
+    if (!raw) throw new Error('Respuesta vacía de Groq');
+
+    // Extraer el primer JSON objeto balanceado de la respuesta
+    const extractBalancedJson = (str) => {
+      const start = str.indexOf('{');
+      if (start === -1) return null;
+      let depth = 0;
+      let inString = false;
+      let escape = false;
+      for (let i = start; i < str.length; i++) {
+        const ch = str[i];
+        if (escape)          { escape = false; continue; }
+        if (ch === '\\')     { escape = true;  continue; }
+        if (ch === '"')      { inString = !inString; continue; }
+        if (inString)        continue;
+        if (ch === '{')      depth++;
+        else if (ch === '}') { depth--; if (depth === 0) return str.slice(start, i + 1); }
+      }
+      return null;
+    };
+
+    const jsonStr = extractBalancedJson(raw);
+    if (!jsonStr) throw new Error('La IA no devolvió JSON válido');
+
+    const parsed = JSON.parse(jsonStr);
+    postProcess(parsed, fullText);
+
+    if (!Array.isArray(parsed.scenarios)) {
+      parsed.scenarios = parsed.scenario ? [parsed.scenario] : [];
+      delete parsed.scenario;
+    }
+
+    parsed.scenarios = parsed.scenarios.map(s => ({
+      ...s,
+      assertions:     Array.isArray(s.assertions)     ? s.assertions     : [],
+      detectedParams: Array.isArray(s.detectedParams) ? s.detectedParams : [],
+      detectedBody:   s.detectedBody || '',
+    }));
+
+    return res.json({
+      success: true,
+      pageTitle: title,
+      rawText:   fullText,
+      ...parsed,
+    });
+
+  } catch (err) {
+    console.error('Error confluence-fetch:', err.message);
+    const status = err?.response?.status;
+    if (status === 401) return res.status(401).json({ success: false, error: 'Credenciales inválidas (401)' });
+    if (status === 403) return res.status(403).json({ success: false, error: 'Sin permisos (403)' });
+    return res.status(500).json({ success: false, error: `Error: ${err.message}` });
   }
 });
 

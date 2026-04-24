@@ -1,6 +1,7 @@
 import React from 'react';
 import ScenarioItem from './ScenarioItem';
 import SmartFill from './SmartFill';
+import ConfluenceImport from './ConfluenceImport';
 import './FeatureForm.css';
 
 export default function FeatureForm({
@@ -14,6 +15,9 @@ export default function FeatureForm({
 }) {
   return (
     <form onSubmit={onSubmit} noValidate>
+
+      {/* ── Confluence Import (flujo separado con review modal) ── */}
+      <ConfluenceImport onApply={onSmartFill} />
 
       {/* ── Smart Fill ── */}
       <SmartFill onApply={onSmartFill} />
