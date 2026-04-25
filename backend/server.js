@@ -435,6 +435,13 @@ app.post('/confluence-test', async (req, res) => {
     return res.json({ success: true, message: 'Conexión exitosa' });
   } catch (err) {
     const status = err?.response?.status;
+    const code   = err?.code;
+    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN')
+      return res.status(503).json({ success: false, error: '🔒 No se puede resolver el host. Verificá que la VPN esté conectada.' });
+    if (code === 'ECONNREFUSED')
+      return res.status(503).json({ success: false, error: '🔌 Conexión rechazada. El servidor Confluence no está accesible desde esta red.' });
+    if (code === 'ETIMEDOUT' || code === 'ECONNABORTED')
+      return res.status(503).json({ success: false, error: '⏱ Tiempo de espera agotado. Verificá la VPN y la Base URL.' });
     if (status === 401) return res.status(401).json({ success: false, error: 'Credenciales inválidas (401 Unauthorized)' });
     if (status === 403) return res.status(403).json({ success: false, error: 'Sin permisos (403 Forbidden)' });
     if (status === 404) return res.status(404).json({ success: false, error: 'URL no encontrada (404). Verificá la Base URL' });
@@ -580,9 +587,180 @@ app.post('/confluence-fetch', async (req, res) => {
   } catch (err) {
     console.error('Error confluence-fetch:', err.message);
     const status = err?.response?.status;
+    const code   = err?.code;
+    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN')
+      return res.status(503).json({ success: false, error: '🔒 No se puede resolver el host. Verificá que la VPN esté conectada.' });
+    if (code === 'ECONNREFUSED')
+      return res.status(503).json({ success: false, error: '🔌 Conexión rechazada. El servidor Confluence no está accesible desde esta red.' });
+    if (code === 'ETIMEDOUT' || code === 'ECONNABORTED')
+      return res.status(503).json({ success: false, error: '⏱ Tiempo de espera agotado. Verificá la VPN y la Base URL.' });
     if (status === 401) return res.status(401).json({ success: false, error: 'Credenciales inválidas (401)' });
     if (status === 403) return res.status(403).json({ success: false, error: 'Sin permisos (403)' });
     return res.status(500).json({ success: false, error: `Error: ${err.message}` });
+  }
+});
+
+// ─── POST /confluence-ask ──────────────────────────────────────────────────────
+// Responde preguntas sobre el contenido de la HU y, si aplica, sugiere cambios
+app.post('/confluence-ask', async (req, res) => {
+  const { rawText, question } = req.body;
+  if (!rawText || !question) {
+    return res.status(400).json({ success: false, error: 'Faltan rawText o question' });
+  }
+  if (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY === 'your_api_key_here') {
+    return res.status(503).json({ success: false, error: 'GROQ_API_KEY no configurada' });
+  }
+
+  const ASK_PROMPT = `Sos un asistente experto en QA que analiza Historias de Usuario de Confluence.
+
+El usuario te va a hacer una pregunta sobre el contenido de una HU (Historia de Usuario).
+Tu respuesta debe tener SIEMPRE este formato JSON exacto (sin markdown, sin texto extra):
+
+{
+  "answer": "Respuesta clara en español a la pregunta del usuario, basada en el contenido de la HU",
+  "hasSuggestion": true o false,
+  "suggestionLabel": "Descripción corta de qué cambiaría (ej: 'Habilitar OCP en todos los escenarios')",
+  "suggestion": null o el JSON completo del análisis actualizado con la misma estructura que usás normalmente
+}
+
+REGLAS:
+- "answer": respondé la pregunta directamente. Si la HU no menciona algo, decilo claramente.
+- "hasSuggestion": true SOLO si la pregunta implica un cambio concreto que mejoraría el test (ej: "¿habría que validar logs?" → podés sugerir habilitar OCP)
+- "suggestionLabel": frase corta que explica el cambio sugerido
+- "suggestion": si hasSuggestion es true, devolvé el JSON completo actualizado con la misma estructura de siempre (featureName, endpoint, baseUrl, scenarios, etc.). Si hasSuggestion es false, devolvé null.
+
+Si el usuario pregunta algo como "¿dice algo de X?" y la respuesta es sí, ofrecer una sugerencia con ese cambio aplicado.
+Si la respuesta es no, no sugerir nada.`;
+
+  try {
+    const combinedText = `CONTENIDO DE LA HU:\n${rawText}\n\nPREGUNTA DEL USUARIO:\n${question}`;
+
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      temperature: 0.2,
+      max_tokens: 4096,
+      messages: [
+        { role: 'system', content: ASK_PROMPT },
+        { role: 'user',   content: combinedText },
+      ],
+    });
+
+    const raw = completion.choices[0]?.message?.content?.trim();
+    if (!raw) throw new Error('Respuesta vacía de Groq');
+
+    const extractBalancedJson = (str) => {
+      const start = str.indexOf('{');
+      if (start === -1) return null;
+      let depth = 0, inString = false, escape = false;
+      for (let i = start; i < str.length; i++) {
+        const ch = str[i];
+        if (escape)          { escape = false; continue; }
+        if (ch === '\\')     { escape = true;  continue; }
+        if (ch === '"')      { inString = !inString; continue; }
+        if (inString)        continue;
+        if (ch === '{')      depth++;
+        else if (ch === '}') { depth--; if (depth === 0) return str.slice(start, i + 1); }
+      }
+      return null;
+    };
+
+    const jsonStr = extractBalancedJson(raw);
+    if (!jsonStr) throw new Error('La IA no devolvió JSON válido');
+
+    const result = JSON.parse(jsonStr);
+
+    // Si hay sugerencia, post-procesarla igual que el resto
+    if (result.hasSuggestion && result.suggestion) {
+      postProcess(result.suggestion, rawText);
+      if (!Array.isArray(result.suggestion.scenarios)) {
+        result.suggestion.scenarios = result.suggestion.scenario ? [result.suggestion.scenario] : [];
+        delete result.suggestion.scenario;
+      }
+      result.suggestion.scenarios = result.suggestion.scenarios.map(s => ({
+        ...s,
+        assertions:     Array.isArray(s.assertions)     ? s.assertions     : [],
+        detectedParams: Array.isArray(s.detectedParams) ? s.detectedParams : [],
+        detectedBody:   s.detectedBody || '',
+      }));
+    }
+
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('Error confluence-ask:', err.message);
+    return res.status(500).json({ success: false, error: `Error al procesar la pregunta: ${err.message}` });
+  }
+});
+
+// ─── POST /confluence-refine ───────────────────────────────────────────────────
+// Toma el rawText ya obtenido + un prompt de refinamiento del usuario,
+// y vuelve a llamar a Groq para mejorar el análisis
+app.post('/confluence-refine', async (req, res) => {
+  const { rawText, refinementPrompt } = req.body;
+  if (!rawText || !refinementPrompt) {
+    return res.status(400).json({ success: false, error: 'Faltan rawText o refinementPrompt' });
+  }
+  if (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY === 'your_api_key_here') {
+    return res.status(503).json({ success: false, error: 'GROQ_API_KEY no configurada' });
+  }
+
+  try {
+    const combinedText = `${rawText}
+
+═══════════════════════════════════════════════════
+INSTRUCCIONES ADICIONALES DEL USUARIO:
+═══════════════════════════════════════════════════
+${refinementPrompt}`;
+
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      temperature: 0.1,
+      max_tokens: 4096,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user',   content: combinedText },
+      ],
+    });
+
+    const raw = completion.choices[0]?.message?.content?.trim();
+    if (!raw) throw new Error('Respuesta vacía de Groq');
+
+    const extractBalancedJson = (str) => {
+      const start = str.indexOf('{');
+      if (start === -1) return null;
+      let depth = 0, inString = false, escape = false;
+      for (let i = start; i < str.length; i++) {
+        const ch = str[i];
+        if (escape)          { escape = false; continue; }
+        if (ch === '\\')     { escape = true;  continue; }
+        if (ch === '"')      { inString = !inString; continue; }
+        if (inString)        continue;
+        if (ch === '{')      depth++;
+        else if (ch === '}') { depth--; if (depth === 0) return str.slice(start, i + 1); }
+      }
+      return null;
+    };
+
+    const jsonStr = extractBalancedJson(raw);
+    if (!jsonStr) throw new Error('La IA no devolvió JSON válido');
+
+    const parsed = JSON.parse(jsonStr);
+    postProcess(parsed, combinedText);
+
+    if (!Array.isArray(parsed.scenarios)) {
+      parsed.scenarios = parsed.scenario ? [parsed.scenario] : [];
+      delete parsed.scenario;
+    }
+    parsed.scenarios = parsed.scenarios.map(s => ({
+      ...s,
+      assertions:     Array.isArray(s.assertions)     ? s.assertions     : [],
+      detectedParams: Array.isArray(s.detectedParams) ? s.detectedParams : [],
+      detectedBody:   s.detectedBody || '',
+    }));
+
+    return res.json({ success: true, ...parsed });
+  } catch (err) {
+    console.error('Error confluence-refine:', err.message);
+    return res.status(500).json({ success: false, error: `Error al refinar: ${err.message}` });
   }
 });
 
