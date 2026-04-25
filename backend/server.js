@@ -1046,6 +1046,190 @@ ${refinementPrompt}`;
   }
 });
 
+// ─── RUNNER AGENT PROXY ────────────────────────────────────────────────────────
+const RUNNER_AGENT_URL   = process.env.RUNNER_AGENT_URL   || 'http://localhost:4000';
+const RUNNER_AGENT_TOKEN = process.env.RUNNER_AGENT_TOKEN || 'local-dev-token';
+
+const agentHeaders = () => ({
+  'Content-Type':  'application/json',
+  'x-agent-token': RUNNER_AGENT_TOKEN,
+});
+
+// GET /runner/health — estado del agente
+app.get('/runner/health', async (req, res) => {
+  try {
+    const { data } = await axios.get(`${RUNNER_AGENT_URL}/health`, { headers: agentHeaders(), timeout: 3000 });
+    res.json(data);
+  } catch (err) {
+    const isDown = err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND';
+    res.status(isDown ? 503 : 500).json({
+      success: false, status: 'DOWN',
+      error: isDown ? '🔌 Runner Agent no disponible. Ejecutá start.ps1 para levantarlo.' : err.message,
+    });
+  }
+});
+
+// GET /runner/features — lista los .feature del proyecto
+app.get('/runner/features', async (req, res) => {
+  try {
+    const { data } = await axios.get(`${RUNNER_AGENT_URL}/features`, { headers: agentHeaders(), timeout: 5000 });
+    res.json(data);
+  } catch (err) {
+    const isDown = err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND';
+    res.status(isDown ? 503 : 500).json({
+      success: false,
+      error: isDown ? '🔌 Runner Agent no disponible. ¿Está corriendo en el puerto 4000?' : err.message,
+    });
+  }
+});
+
+// GET /runner/features/content?path= — contenido de un .feature
+app.get('/runner/features/content', async (req, res) => {
+  try {
+    const { data } = await axios.get(
+      `${RUNNER_AGENT_URL}/features/content?path=${encodeURIComponent(req.query.path || '')}`,
+      { headers: agentHeaders(), timeout: 5000 }
+    );
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /runner/features/save
+app.post('/runner/features/save', async (req, res) => {
+  try {
+    const { data } = await axios.post(`${RUNNER_AGENT_URL}/features/save`, req.body, { headers: agentHeaders(), timeout: 5000 });
+    res.json(data);
+  } catch (err) { res.status(err?.response?.status || 500).json({ success: false, error: err?.response?.data?.error || err.message }); }
+});
+
+// POST /runner/features/rename
+app.post('/runner/features/rename', async (req, res) => {
+  try {
+    const { data } = await axios.post(`${RUNNER_AGENT_URL}/features/rename`, req.body, { headers: agentHeaders(), timeout: 5000 });
+    res.json(data);
+  } catch (err) { res.status(err?.response?.status || 500).json({ success: false, error: err?.response?.data?.error || err.message }); }
+});
+
+// POST /runner/features/create
+app.post('/runner/features/create', async (req, res) => {
+  try {
+    const { data } = await axios.post(`${RUNNER_AGENT_URL}/features/create`, req.body, { headers: agentHeaders(), timeout: 5000 });
+    res.json(data);
+  } catch (err) { res.status(err?.response?.status || 500).json({ success: false, error: err?.response?.data?.error || err.message }); }
+});
+
+// POST /runner/features/import
+app.post('/runner/features/import', async (req, res) => {
+  try {
+    const { data } = await axios.post(`${RUNNER_AGENT_URL}/features/import`, req.body, { headers: agentHeaders(), timeout: 5000 });
+    res.json(data);
+  } catch (err) { res.status(err?.response?.status || 500).json({ success: false, error: err?.response?.data?.error || err.message }); }
+});
+
+// DELETE /runner/features
+app.delete('/runner/features', async (req, res) => {
+  try {
+    const { data } = await axios.delete(`${RUNNER_AGENT_URL}/features`, { headers: agentHeaders(), data: req.body, timeout: 5000 });
+    res.json(data);
+  } catch (err) { res.status(err?.response?.status || 500).json({ success: false, error: err?.response?.data?.error || err.message }); }
+});
+
+// POST /runner/analyze — analiza el output de Maven/Karate con IA
+app.post('/runner/analyze', async (req, res) => {
+  const { logs, featureName, exitCode, summary, provider = 'groq', apiKey, model, ollamaUrl } = req.body;
+  if (!logs || !logs.length) {
+    return res.status(400).json({ success: false, error: 'No hay logs para analizar' });
+  }
+
+  const logsText = logs.map(l => `[${l.type.toUpperCase()}] ${l.text}`).join('\n');
+  const status   = exitCode === 0 ? 'EXITOSO' : 'FALLIDO';
+  const summaryText = summary
+    ? `\nResumen Karate: ${summary.featuresPassed} features OK, ${summary.featuresFailed} fallidos, ${summary.scenariosPassed} scenarios OK, ${summary.scenariosfailed} fallidos.`
+    : '';
+
+  const RUNNER_PROMPT = `Sos un experto en QA automation con Karate DSL y Maven.
+Analizá el siguiente output de consola de una ejecución de tests y respondé en español con este JSON exacto (sin markdown):
+
+{
+  "status": "success|failure|error",
+  "summary": "Resumen en 1-2 líneas de qué pasó",
+  "rootCause": "Causa raíz del problema (null si fue exitoso)",
+  "failedTests": ["lista de tests/scenarios que fallaron con su error"],
+  "fixes": [
+    { "title": "Título corto de la acción", "description": "Explicación detallada de cómo resolverlo" }
+  ],
+  "nextSteps": ["paso 1", "paso 2"]
+}
+
+REGLAS:
+- Si el build fue exitoso (BUILD SUCCESS), status = "success", rootCause = null, fixes = []
+- Si hay errores de conexión (ECONNREFUSED, timeout, SSL), identificalos como causa raíz
+- Si hay assertion failures de Karate, listá cada scenario fallido con el campo que falló
+- Si hay errores de Maven/Java (ClassNotFoundException, etc.), explicá cómo resolverlos
+- Los fixes deben ser accionables y específicos para el contexto de Karate/QA
+- Siempre respondé en español`;
+
+  try {
+    const raw = await callAI({
+      provider, apiKey, model, ollamaUrl,
+      messages: [
+        { role: 'system', content: RUNNER_PROMPT },
+        { role: 'user', content: `Feature: ${featureName || 'todos'}\nResultado: ${status}${summaryText}\n\nLOGS:\n${logsText.slice(0, 8000)}` },
+      ],
+    });
+
+    const start = raw.indexOf('{');
+    const end   = raw.lastIndexOf('}');
+    if (start === -1 || end === -1) throw new Error('La IA no devolvió JSON válido');
+    const parsed = JSON.parse(raw.slice(start, end + 1));
+    return res.json({ success: true, analysis: parsed });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /runner/report — último reporte Karate
+app.get('/runner/report', async (req, res) => {
+  try {
+    const { data } = await axios.get(`${RUNNER_AGENT_URL}/report`, { headers: agentHeaders(), timeout: 5000 });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /runner/run — ejecuta Maven, hace pipe del SSE del agente al cliente
+app.post('/runner/run', async (req, res) => {
+  res.setHeader('Content-Type',  'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection',    'keep-alive');
+  res.flushHeaders();
+
+  const send = (type, data) =>
+    res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
+
+  try {
+    const agentRes = await axios.post(
+      `${RUNNER_AGENT_URL}/run`,
+      req.body,
+      { headers: agentHeaders(), responseType: 'stream', timeout: 0 }
+    );
+    agentRes.data.on('data',  chunk => res.write(chunk));
+    agentRes.data.on('end',   ()    => res.end());
+    agentRes.data.on('error', err   => { send('error', err.message); res.end(); });
+  } catch (err) {
+    const isDown = err.code === 'ECONNREFUSED';
+    send('error', isDown
+      ? '🔌 Runner Agent no disponible. Ejecutá start.ps1 para levantarlo.'
+      : err.message
+    );
+    send('done', { exitCode: 1, success: false, message: '❌ No se pudo conectar al Runner Agent' });
+    res.end();
+  }
+});
+
 // ─── Health check ──────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'OK', timestamp: new Date() }));
 

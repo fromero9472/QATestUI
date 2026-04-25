@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Zap, Activity, WifiOff, Sun, Moon, GitBranch, LogOut, LogIn, ChevronDown } from 'lucide-react';
+import { Zap, Activity, WifiOff, Sun, Moon, GitBranch, LogOut, LogIn, ChevronDown, Play } from 'lucide-react';
 import { AuthProvider, useAuth } from './AuthContext';
 import FeatureForm from './components/FeatureForm';
 import FeatureOutput from './components/FeatureOutput';
+import FeatureRunner from './components/FeatureRunner';
 import './App.css';
 
 // ── Theme helpers ─────────────────────────────────────────────────
@@ -108,6 +109,7 @@ function AppInner() {
   const [errors, setErrors]   = useState([]);
   const [backendOk, setBackendOk] = useState(null);
   const [theme, setTheme]     = useState(() => getInitialTheme());
+  const [activeTab, setActiveTab] = useState('generator'); // 'generator' | 'runner'
 
   useEffect(() => { applyTheme(theme); }, [theme]);
   const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark');
@@ -271,9 +273,33 @@ function AppInner() {
         </div>
       </header>
 
-      {/* ── Hero ── */}
-      {!output && (
-        <section className="max-w-5xl mx-auto w-full px-6 pt-12 pb-8">
+      {/* ── Tabs de navegación ── */}
+      <div className="max-w-5xl mx-auto w-full px-6 pt-6">
+        <div className="flex gap-1 p-1 rounded-xl bg-white/5 border border-white/10 w-fit">
+          <button
+            onClick={() => setActiveTab('generator')}
+            className={`flex items-center gap-2 py-2 px-5 rounded-lg text-xs font-semibold transition-all
+              ${activeTab === 'generator'
+                ? 'bg-violet-600 text-white shadow shadow-violet-500/30'
+                : 'text-slate-400 hover:text-slate-200'}`}
+          >
+            <Zap size={13} /> Generador
+          </button>
+          <button
+            onClick={() => { setActiveTab('runner'); setOutput(null); }}
+            className={`flex items-center gap-2 py-2 px-5 rounded-lg text-xs font-semibold transition-all
+              ${activeTab === 'runner'
+                ? 'bg-violet-600 text-white shadow shadow-violet-500/30'
+                : 'text-slate-400 hover:text-slate-200'}`}
+          >
+            <Play size={13} /> Feature Runner
+          </button>
+        </div>
+      </div>
+
+      {/* ── Hero (solo en Generador sin output) ── */}
+      {activeTab === 'generator' && !output && (
+        <section className="max-w-5xl mx-auto w-full px-6 pt-8 pb-8">
           <div className="mb-2">
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-violet-500/10 border border-violet-500/20 text-violet-400 text-xs font-semibold mb-4">
               <Zap size={11} /> Groq · GitHub Copilot · OpenAI · Ollama
@@ -300,25 +326,28 @@ function AppInner() {
       )}
 
       {/* ── Main ── */}
-      <main className="max-w-5xl mx-auto w-full px-6 pb-16 flex-1">
-        {!output ? (
-          <FeatureForm
-            form={form} loading={loading} errors={errors}
-            onTopLevel={handleTopLevel}
-            onScenarioChange={handleScenarioChange}
-            onAddScenario={addScenario}
-            onRemoveScenario={removeScenario}
-            onAddListItem={addListItem}
-            onRemoveListItem={removeListItem}
-            onChangeListItem={changeListItem}
-            emptyParam={emptyParam} emptyHeader={emptyHeader}
-            emptyAssertion={emptyAssertion} emptyDbAssertion={emptyDbAssertion}
-            onSmartFill={handleSmartFill}
-            onSubmit={handleSubmit}
-          />
-        ) : (
-          <FeatureOutput output={output} onDownload={handleDownload} onReset={handleReset} />
+      <main className="max-w-5xl mx-auto w-full px-6 pb-16 flex-1 mt-6">
+        {activeTab === 'generator' && (
+          !output ? (
+            <FeatureForm
+              form={form} loading={loading} errors={errors}
+              onTopLevel={handleTopLevel}
+              onScenarioChange={handleScenarioChange}
+              onAddScenario={addScenario}
+              onRemoveScenario={removeScenario}
+              onAddListItem={addListItem}
+              onRemoveListItem={removeListItem}
+              onChangeListItem={changeListItem}
+              emptyParam={emptyParam} emptyHeader={emptyHeader}
+              emptyAssertion={emptyAssertion} emptyDbAssertion={emptyDbAssertion}
+              onSmartFill={handleSmartFill}
+              onSubmit={handleSubmit}
+            />
+          ) : (
+            <FeatureOutput output={output} onDownload={handleDownload} onReset={handleReset} />
+          )
         )}
+        {activeTab === 'runner' && <FeatureRunner />}
       </main>
 
       {/* ── Footer ── */}
