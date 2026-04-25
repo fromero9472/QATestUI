@@ -128,6 +128,7 @@ html.light {
 /* ── Light mode structural overrides ──────────────────────────── */
 /* Hardcoded bg-[#...] arbitrary classes → mapped to CSS variables */
 html.light .bg-\[\#0b0f1a\]   { background-color: var(--bg) !important; }
+html.light .bg-\[\#0d1117\]   { background-color: var(--bg-card) !important; }
 html.light .bg-\[\#111827\]   { background-color: var(--bg-card) !important; }
 html.light .bg-\[\#0f172a\]   { background-color: var(--bg-input) !important; }
 html.light .bg-\[\#1e293b\]   { background-color: var(--border) !important; }

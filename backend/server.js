@@ -1,22 +1,301 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const session = require('express-session');
 const Handlebars = require('handlebars');
 const fs = require('fs');
 const path = require('path');
 const { body, validationResult } = require('express-validator');
 const Groq = require('groq-sdk');
+const OpenAI = require('openai');
 const axios = require('axios').default || require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
-// ─── Groq client ───────────────────────────────────────────────────────────────
+// ─── Groq client (default, using env key) ─────────────────────────────────────
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
+// ─── GitHub Copilot token cache ────────────────────────────────────────────────
+// Maps githubToken → { copilotToken, expiresAt }
+const copilotTokenCache = new Map();
+
+async function getCopilotToken(githubToken) {
+  const cached = copilotTokenCache.get(githubToken);
+  if (cached && cached.expiresAt > Date.now() + 60_000) {
+    return cached.copilotToken; // Still valid for >1 min
+  }
+
+  const { data } = await axios.get(
+    'https://api.github.com/copilot_internal/v2/token',
+    {
+      headers: {
+        Authorization: `token ${githubToken}`,
+        'User-Agent': 'QATestUI/1.0',
+        'Editor-Version': 'vscode/1.95.0',
+        'Editor-Plugin-Version': 'copilot/1.245.0',
+        'Copilot-Integration-Id': 'vscode-chat',
+      },
+    }
+  );
+
+  if (!data.token) throw new Error('No se pudo obtener el token de Copilot. ¿Tenés suscripción activa?');
+
+  // Token expires_at is a Unix timestamp (seconds)
+  const expiresAt = (data.expires_at || Math.floor(Date.now() / 1000) + 1800) * 1000;
+  copilotTokenCache.set(githubToken, { copilotToken: data.token, expiresAt });
+  return data.token;
+}
+
+// ─── Multi-provider AI abstraction ────────────────────────────────────────────
+// provider: 'groq' | 'openai' | 'github' | 'copilot' | 'ollama'
+async function callAI({ provider = 'groq', apiKey, model, messages, ollamaUrl }) {
+  if (provider === 'groq') {
+    const client = apiKey ? new Groq({ apiKey }) : groq;
+    const mdl = model || 'llama-3.3-70b-versatile';
+    const completion = await client.chat.completions.create({
+      model: mdl, temperature: 0.1, max_tokens: 2048, messages,
+    });
+    const raw = completion.choices[0]?.message?.content?.trim();
+    if (!raw) throw new Error('Respuesta vacía de Groq');
+    return raw;
+  }
+
+  if (provider === 'openai') {
+    const key = apiKey || process.env.OPENAI_API_KEY;
+    if (!key) throw new Error('OpenAI API key no configurada');
+    const client = new OpenAI({ apiKey: key });
+    const mdl = model || 'gpt-4o-mini';
+    const completion = await client.chat.completions.create({
+      model: mdl, temperature: 0.1, max_tokens: 2048, messages,
+    });
+    const raw = completion.choices[0]?.message?.content?.trim();
+    if (!raw) throw new Error('Respuesta vacía de OpenAI');
+    return raw;
+  }
+
+  // GitHub Models — OpenAI-compatible API, autenticado con GitHub OAuth token o PAT
+  if (provider === 'github') {
+    const key = apiKey;
+    if (!key) throw new Error('Token de GitHub no disponible. Iniciá sesión con GitHub.');
+    const client = new OpenAI({
+      apiKey: key,
+      baseURL: 'https://models.inference.ai.azure.com',
+    });
+    const mdl = model || 'gpt-4o-mini';
+    const completion = await client.chat.completions.create({
+      model: mdl, temperature: 0.1, max_tokens: 2048, messages,
+    });
+    const raw = completion.choices[0]?.message?.content?.trim();
+    if (!raw) throw new Error('Respuesta vacía de GitHub Models');
+    return raw;
+  }
+
+  // GitHub Copilot (plan pago) — accede a Claude Sonnet, GPT-4o, o3-mini, Gemini, etc.
+  if (provider === 'copilot') {
+    const githubToken = apiKey;
+    if (!githubToken) throw new Error('Token de GitHub no disponible. Iniciá sesión con GitHub.');
+
+    const copilotToken = await getCopilotToken(githubToken);
+    const mdl = model || 'gpt-4o';
+
+    const client = new OpenAI({
+      apiKey: copilotToken,
+      baseURL: 'https://api.githubcopilot.com',
+      defaultHeaders: {
+        'Editor-Version': 'vscode/1.95.0',
+        'Editor-Plugin-Version': 'copilot/1.245.0',
+        'Copilot-Integration-Id': 'vscode-chat',
+        'X-GitHub-Api-Version': '2023-11-28',
+      },
+    });
+
+    const completion = await client.chat.completions.create({
+      model: mdl, temperature: 0.1, max_tokens: 2048, messages,
+    });
+    const raw = completion.choices[0]?.message?.content?.trim();
+    if (!raw) throw new Error('Respuesta vacía de GitHub Copilot');
+    return raw;
+  }
+
+  if (provider === 'ollama') {
+    const base = (ollamaUrl || process.env.OLLAMA_URL || 'http://localhost:11434').replace(/\/$/, '');
+    const mdl = model || 'llama3';
+    const resp = await axios.post(`${base}/api/chat`, {
+      model: mdl, stream: false,
+      options: { temperature: 0.1 },
+      messages,
+    }, { timeout: 120000 });
+    const raw = resp.data?.message?.content?.trim();
+    if (!raw) throw new Error('Respuesta vacía de Ollama');
+    return raw;
+  }
+
+  throw new Error(`Proveedor de IA desconocido: ${provider}`);
+}
+
 // ─── Middleware ────────────────────────────────────────────────────────────────
-app.use(cors());
+app.use(cors({ origin: FRONTEND_URL, credentials: true }));
 app.use(express.json());
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'qatestui-secret-changeme',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { secure: false, maxAge: 8 * 60 * 60 * 1000 }, // 8h
+}));
+
+// ─── GitHub OAuth ──────────────────────────────────────────────────────────────
+// Requires GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET in .env
+// Create a GitHub OAuth App at: https://github.com/settings/developers
+// Set callback URL to: http://localhost:3001/auth/github/callback
+
+app.get('/auth/github', (req, res) => {
+  const clientId = process.env.GITHUB_CLIENT_ID;
+  if (!clientId) {
+    return res.redirect(`${FRONTEND_URL}?auth_error=GITHUB_CLIENT_ID+no+configurado`);
+  }
+  // read:user para identificar al usuario
+  // (Copilot no requiere scope OAuth extra — el acceso se valida con la suscripción)
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: `${req.protocol}://${req.get('host')}/auth/github/callback`,
+    scope: 'read:user',
+  });
+  res.redirect(`https://github.com/login/oauth/authorize?${params}`);
+});
+
+app.get('/auth/github/callback', async (req, res) => {
+  const { code } = req.query;
+  if (!code) return res.redirect(`${FRONTEND_URL}?auth_error=No+se+recibió+código+de+GitHub`);
+
+  try {
+    const { data } = await axios.post(
+      'https://github.com/login/oauth/access_token',
+      {
+        client_id:     process.env.GITHUB_CLIENT_ID,
+        client_secret: process.env.GITHUB_CLIENT_SECRET,
+        code,
+      },
+      { headers: { Accept: 'application/json' } }
+    );
+
+    if (data.error) throw new Error(data.error_description || data.error);
+
+    const accessToken = data.access_token;
+
+    // Fetch basic user info to show in frontend
+    const { data: user } = await axios.get('https://api.github.com/user', {
+      headers: { Authorization: `Bearer ${accessToken}`, 'User-Agent': 'QATestUI' },
+    });
+
+    // Pass token + user info back to frontend via redirect with query params
+    // (token stored client-side in localStorage — never persisted on server)
+    const params = new URLSearchParams({
+      github_token: accessToken,
+      github_login: user.login,
+      github_name:  user.name || user.login,
+      github_avatar: user.avatar_url || '',
+    });
+    res.redirect(`${FRONTEND_URL}?${params}`);
+  } catch (err) {
+    console.error('GitHub OAuth error:', err.message);
+    res.redirect(`${FRONTEND_URL}?auth_error=${encodeURIComponent(err.message)}`);
+  }
+});
+
+app.get('/auth/logout', (req, res) => {
+  req.session.destroy();
+  res.json({ success: true });
+});
+
+// ─── Copilot: verificar suscripción y listar modelos disponibles ───────────────
+app.post('/copilot/check', async (req, res) => {
+  const { githubToken } = req.body;
+  if (!githubToken) return res.status(400).json({ hasCopilot: false, error: 'Token requerido' });
+
+  try {
+    const copilotToken = await getCopilotToken(githubToken);
+
+    // Listar modelos disponibles en la suscripción del usuario
+    let models = [];
+    try {
+      const { data } = await axios.get('https://api.githubcopilot.com/models', {
+        headers: {
+          Authorization: `Bearer ${copilotToken}`,
+          'Editor-Version': 'vscode/1.95.0',
+          'Editor-Plugin-Version': 'copilot/1.245.0',
+          'Copilot-Integration-Id': 'vscode-chat',
+        },
+      });
+      // Filtrar solo modelos de chat
+      models = (data?.data || [])
+        .filter(m => m.capabilities?.type === 'chat' || m.object === 'model')
+        .map(m => m.id);
+    } catch {
+      // Si falla el listado, usar modelos conocidos como fallback
+      models = ['gpt-4o', 'gpt-4o-mini', 'claude-3.5-sonnet', 'claude-3.7-sonnet', 'o3-mini', 'o1-mini'];
+    }
+
+    res.json({ hasCopilot: true, models });
+  } catch (err) {
+    const status = err?.response?.status;
+    const msg = err?.response?.data?.message || err.message;
+    let friendlyError;
+    if (status === 404 || msg?.toLowerCase().includes('not found')) {
+      friendlyError = 'Tu cuenta no tiene suscripción activa de GitHub Copilot. Podés usar GitHub Models (gratis).';
+    } else if (status === 401 || msg?.toLowerCase().includes('unauthorized')) {
+      friendlyError = 'Token de GitHub inválido o sin permisos suficientes.';
+    } else {
+      friendlyError = msg || 'No se pudo verificar el acceso a Copilot.';
+    }
+    res.json({ hasCopilot: false, error: friendlyError });
+  }
+});
+
+// ─── AI Providers info ─────────────────────────────────────────────────────────
+app.get('/ai-providers', (req, res) => {
+  res.json({
+    providers: [
+      {
+        id: 'groq', label: 'Groq (Recomendado)', requiresKey: true, authType: 'apikey',
+        keyConfigured: !!(process.env.GROQ_API_KEY && process.env.GROQ_API_KEY !== 'your_api_key_here'),
+        keyUrl: 'https://console.groq.com/keys',
+        models: ['llama-3.3-70b-versatile', 'llama-3.1-70b-versatile', 'mixtral-8x7b-32768', 'gemma2-9b-it'],
+        defaultModel: 'llama-3.3-70b-versatile',
+      },
+      {
+        id: 'copilot', label: 'GitHub Copilot', requiresKey: false, authType: 'oauth',
+        keyConfigured: !!(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET),
+        oauthConfigured: !!(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET),
+        requiresPaidPlan: true,
+        // Modelos conocidos — se actualizan dinámicamente desde /copilot/check
+        models: ['gpt-4o', 'gpt-4o-mini', 'claude-3.5-sonnet', 'claude-3.7-sonnet', 'o3-mini', 'o1-mini', 'gemini-2.0-flash-001'],
+        defaultModel: 'claude-3.5-sonnet',
+      },
+      {
+        id: 'github', label: 'GitHub Models (gratis)', requiresKey: false, authType: 'oauth',
+        keyConfigured: !!(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET),
+        oauthConfigured: !!(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET),
+        models: ['gpt-4o-mini', 'gpt-4o', 'Meta-Llama-3.1-70B-Instruct', 'Mistral-large-2411', 'Phi-4'],
+        defaultModel: 'gpt-4o-mini',
+      },
+      {
+        id: 'openai', label: 'OpenAI', requiresKey: true, authType: 'apikey',
+        keyConfigured: !!process.env.OPENAI_API_KEY,
+        keyUrl: 'https://platform.openai.com/api-keys',
+        models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+        defaultModel: 'gpt-4o-mini',
+      },
+      {
+        id: 'ollama', label: 'Ollama (Local)', requiresKey: false, authType: 'none',
+        keyConfigured: true,
+        models: ['llama3', 'llama3.1', 'mistral', 'codellama', 'phi3', 'gemma2'],
+        defaultModel: 'llama3',
+      },
+    ]
+  });
+});
 
 // ─── Handlebars helpers ────────────────────────────────────────────────────────
 Handlebars.registerHelper('upperCase', (str) => (str ? str.toUpperCase() : ''));
@@ -222,31 +501,34 @@ const postProcess = (parsed, originalText) => {
 };
 
 app.post('/parse-criteria', async (req, res) => {
-  const { text } = req.body;
+  const { text, provider = 'groq', apiKey, model, ollamaUrl } = req.body;
   if (!text || !text.trim()) {
     return res.status(400).json({ success: false, errors: ['El texto no puede estar vacío'] });
   }
 
-  if (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY === 'your_api_key_here') {
+  // Validate that there is a usable key for cloud providers
+  if (provider === 'groq' && !apiKey && (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY === 'your_api_key_here')) {
     return res.status(503).json({
       success: false,
       errors: ['GROQ_API_KEY no configurada. Agregá tu API key en backend/.env (gratis en console.groq.com/keys)']
     });
   }
+  if (provider === 'openai' && !apiKey && !process.env.OPENAI_API_KEY) {
+    return res.status(503).json({
+      success: false,
+      errors: ['OpenAI API key no configurada. Ingresá tu key en el panel o en backend/.env como OPENAI_API_KEY']
+    });
+  }
 
   try {
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      temperature: 0.1,
-      max_tokens: 2048,
+    const raw = await callAI({
+      provider, apiKey, model, ollamaUrl,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user',   content: text }
       ],
     });
 
-    const raw = completion.choices[0]?.message?.content?.trim();
-    if (!raw) throw new Error('Respuesta vacía de Groq');
 
     // Extraer el primer JSON objeto balanceado de la respuesta
     const extractBalancedJson = (str) => {
@@ -295,13 +577,13 @@ app.post('/parse-criteria', async (req, res) => {
     return res.json({ success: true, ...parsed });
 
   } catch (err) {
-    console.error('Error Groq:', err.message);
-    const isGroqError = err?.error?.type || err?.status;
+    console.error('Error AI provider:', err.message);
+    const isApiError = err?.error?.type || err?.status;
     return res.status(500).json({
       success: false,
-      errors: [isGroqError
-        ? `Error de Groq API: ${err.message}`
-        : 'No se pudo analizar el criterio. Verificá el formato del texto.'
+      errors: [isApiError
+        ? `Error de API (${provider}): ${err.message}`
+        : err.message || 'No se pudo analizar el criterio. Verificá el formato del texto.'
       ]
     });
   }

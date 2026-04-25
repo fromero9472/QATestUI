@@ -3,6 +3,7 @@ import { FileText, Radio, AlertTriangle, PlusCircle, Zap } from 'lucide-react';
 import ScenarioItem from './ScenarioItem';
 import SmartFill from './SmartFill';
 import ConfluenceImport from './ConfluenceImport';
+import AIProviderPanel from './AIProviderPanel';
 import './FeatureForm.css';
 
 export default function FeatureForm({
@@ -15,6 +16,9 @@ export default function FeatureForm({
 }) {
   return (
     <form onSubmit={onSubmit} noValidate className="space-y-4">
+
+      {/* ── Proveedor de IA (global) ── */}
+      <AIProviderPanel defaultOpen={false} />
 
       {/* ── Confluence Import ── */}
       <ConfluenceImport onApply={onSmartFill} />

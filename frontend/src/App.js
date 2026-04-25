@@ -1,31 +1,27 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Zap, Activity, WifiOff, Sun, Moon } from 'lucide-react';
+import { Zap, Activity, WifiOff, Sun, Moon, GitBranch, LogOut, LogIn, ChevronDown } from 'lucide-react';
+import { AuthProvider, useAuth } from './AuthContext';
+import FeatureForm from './components/FeatureForm';
+import FeatureOutput from './components/FeatureOutput';
+import './App.css';
 
 // ── Theme helpers ─────────────────────────────────────────────────
 const THEME_KEY = 'qatestui_theme';
-
 function getInitialTheme() {
   const saved = localStorage.getItem(THEME_KEY);
   if (saved === 'light' || saved === 'dark') return saved;
-  // Detect system preference
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
-
 function applyTheme(theme) {
   const html = document.documentElement;
   if (theme === 'light') { html.classList.add('light'); html.classList.remove('dark'); }
   else                   { html.classList.remove('light'); html.classList.add('dark'); }
   localStorage.setItem(THEME_KEY, theme);
 }
-import FeatureForm from './components/FeatureForm';
-import FeatureOutput from './components/FeatureOutput';
-import './App.css';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:3001';
-
 const uid = () => Date.now() + Math.random();
-
 export const emptyParam       = () => ({ id: uid(), key: '', value: '' });
 export const emptyHeader      = () => ({ id: uid(), key: '', value: '' });
 export const emptyAssertion   = () => ({ id: uid(), field: '', operator: '!= null', value: '' });
@@ -41,7 +37,71 @@ const emptyScenario = () => ({
 
 const initialForm = { featureName: '', endpoint: '', baseUrl: '', enableOcp: false, ocpToken: '', namespace: '', scenarios: [] };
 
-export default function App() {
+// ── GitHub session widget (navbar) ────────────────────────────────
+function GitHubSessionWidget() {
+  const { githubUser, isGitHubLoggedIn, loginWithGitHub, logout, currentProvider, copilotStatus } = useAuth();
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  if (!isGitHubLoggedIn) {
+    return (
+      <button
+        type="button"
+        onClick={() => loginWithGitHub('copilot')}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-xs font-semibold transition-all"
+        title="Iniciar sesión con GitHub para usar Copilot / GitHub Models"
+      >
+        <GitBranch size={13} />
+        <span className="hidden sm:inline">Conectar GitHub</span>
+      </button>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setMenuOpen(o => !o)}
+        className="flex items-center gap-2 px-2.5 py-1.5 rounded-full bg-green-500/10 border border-green-500/20 hover:bg-green-500/15 transition-all"
+      >
+        {githubUser?.avatar
+          ? <img src={githubUser.avatar} alt="" className="w-5 h-5 rounded-full" />
+          : <GitBranch size={13} className="text-green-400" />
+        }
+        <span className="text-xs font-semibold text-green-400 hidden sm:inline">{githubUser?.login}</span>
+        {currentProvider.id === 'copilot' && copilotStatus === 'ok' && (
+          <span className="px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/30 text-amber-400 text-[10px] font-bold leading-none">PRO</span>
+        )}
+        <ChevronDown size={11} className="text-green-400" />
+      </button>
+
+      {menuOpen && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+          <div className="absolute right-0 top-full mt-2 z-50 w-52 rounded-xl bg-[#111827] border border-[#1e293b] shadow-xl shadow-black/40 overflow-hidden">
+            <div className="px-4 py-3 border-b border-[#1e293b]">
+              <p className="text-xs font-semibold text-white">{githubUser?.name || githubUser?.login}</p>
+              <p className="text-xs text-slate-500">@{githubUser?.login}</p>
+            </div>
+            <div className="px-4 py-2 border-b border-[#1e293b]">
+              <p className="text-xs text-slate-500 mb-0.5">Proveedor activo</p>
+              <p className="text-xs font-semibold text-violet-400">{currentProvider.label}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => { logout(); setMenuOpen(false); }}
+              className="w-full flex items-center gap-2 px-4 py-3 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+            >
+              <LogOut size={13} /> Cerrar sesión de GitHub
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Main app inner (consumes AuthContext) ─────────────────────────
+function AppInner() {
   const [form, setForm]       = useState(initialForm);
   const [output, setOutput]   = useState(null);
   const [loading, setLoading] = useState(false);
@@ -49,9 +109,7 @@ export default function App() {
   const [backendOk, setBackendOk] = useState(null);
   const [theme, setTheme]     = useState(() => getInitialTheme());
 
-  // Apply theme on mount + on change
   useEffect(() => { applyTheme(theme); }, [theme]);
-
   const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark');
 
   useEffect(() => {
@@ -171,18 +229,16 @@ export default function App() {
           </div>
 
           {/* Right side */}
-          <div className="flex items-center gap-3">
-            {/* Backend status badge */}
+          <div className="flex items-center gap-2">
+            {/* Backend status */}
             {backendOk === false && (
               <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-medium">
-                <WifiOff size={12} />
-                Backend offline
+                <WifiOff size={12} /> Backend offline
               </div>
             )}
             {backendOk === true && (
               <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium">
-                <Activity size={12} />
-                Backend online
+                <Activity size={12} /> Backend online
               </div>
             )}
             {backendOk === null && (
@@ -191,33 +247,26 @@ export default function App() {
                 Verificando...
               </div>
             )}
+
             <span className="px-2.5 py-1 rounded-full bg-violet-500/10 border border-violet-500/30 text-violet-400 text-xs font-bold">v2.0</span>
 
-            {/* ── Theme toggle ── */}
+            {/* Theme toggle */}
             <button
               type="button"
               onClick={toggleTheme}
               title={theme === 'dark' ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}
-              className="
-                relative flex items-center gap-1.5 px-3 py-1.5 rounded-full
-                bg-white/10 backdrop-blur-md border border-white/10
-                text-xs font-semibold
-                hover:bg-white/20
-                transition-all duration-300 ease-in-out
-                overflow-hidden group
-              "
+              className="relative flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 backdrop-blur-md border border-white/10 text-xs font-semibold hover:bg-white/20 transition-all duration-300 overflow-hidden group"
               style={{ color: theme === 'dark' ? '#fbbf24' : '#7c3aed' }}
             >
-              <span className="transition-all duration-300 ease-in-out">
-                {theme === 'dark'
-                  ? <Sun size={14} className="transition-transform duration-300 group-hover:rotate-12" />
-                  : <Moon size={14} className="transition-transform duration-300 group-hover:-rotate-12" />
-                }
-              </span>
-              <span className="transition-all duration-300">
-                {theme === 'dark' ? 'Claro' : 'Oscuro'}
-              </span>
+              {theme === 'dark'
+                ? <Sun size={14} className="transition-transform duration-300 group-hover:rotate-12" />
+                : <Moon size={14} className="transition-transform duration-300 group-hover:-rotate-12" />
+              }
+              <span>{theme === 'dark' ? 'Claro' : 'Oscuro'}</span>
             </button>
+
+            {/* GitHub session widget */}
+            <GitHubSessionWidget />
           </div>
         </div>
       </header>
@@ -227,7 +276,7 @@ export default function App() {
         <section className="max-w-5xl mx-auto w-full px-6 pt-12 pb-8">
           <div className="mb-2">
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-violet-500/10 border border-violet-500/20 text-violet-400 text-xs font-semibold mb-4">
-              <Zap size={11} /> Powered by Groq AI
+              <Zap size={11} /> Groq · GitHub Copilot · OpenAI · Ollama
             </span>
           </div>
           <h1 className="text-4xl font-extrabold text-white mb-3 leading-tight">
@@ -254,9 +303,7 @@ export default function App() {
       <main className="max-w-5xl mx-auto w-full px-6 pb-16 flex-1">
         {!output ? (
           <FeatureForm
-            form={form}
-            loading={loading}
-            errors={errors}
+            form={form} loading={loading} errors={errors}
             onTopLevel={handleTopLevel}
             onScenarioChange={handleScenarioChange}
             onAddScenario={addScenario}
@@ -264,10 +311,8 @@ export default function App() {
             onAddListItem={addListItem}
             onRemoveListItem={removeListItem}
             onChangeListItem={changeListItem}
-            emptyParam={emptyParam}
-            emptyHeader={emptyHeader}
-            emptyAssertion={emptyAssertion}
-            emptyDbAssertion={emptyDbAssertion}
+            emptyParam={emptyParam} emptyHeader={emptyHeader}
+            emptyAssertion={emptyAssertion} emptyDbAssertion={emptyDbAssertion}
             onSmartFill={handleSmartFill}
             onSubmit={handleSubmit}
           />
@@ -284,3 +329,11 @@ export default function App() {
   );
 }
 
+// ── Root export wrapped with AuthProvider ─────────────────────────
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppInner />
+    </AuthProvider>
+  );
+}

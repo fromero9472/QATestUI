@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import {
   Link2, ChevronDown, ChevronUp, Plug, Download, CheckCircle2, XCircle,
-  Wifi, WifiOff, RotateCcw, Sparkles, MessageSquare, Pencil, Eye, Code2, X, Undo2,
+  Wifi, WifiOff, RotateCcw, Sparkles, MessageSquare, Pencil, Eye, Code2, X, Undo2, Lock, GitBranch,
 } from 'lucide-react';
+import { useAuth } from '../AuthContext';
 import './ConfluenceImport.css';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:3001';
@@ -43,6 +44,20 @@ const METHOD_COLORS = {
   PATCH:  'bg-orange-500/10  text-orange-400  border-orange-500/20',
   DELETE: 'bg-red-500/10     text-red-400     border-red-500/20',
 };
+
+// ── Helper: check if AI is ready to use ──────────────────────────────────────
+function useAIReady() {
+  const { providerId, apiKey, currentProvider, isGitHubLoggedIn, copilotStatus } = useAuth();
+  if (['github', 'copilot'].includes(providerId)) {
+    if (!isGitHubLoggedIn) return { ready: false, reason: 'Necesitás conectar tu cuenta de GitHub para usar este proveedor.' };
+    if (providerId === 'copilot' && copilotStatus !== 'ok') return { ready: false, reason: 'Se verificó que no tenés acceso a GitHub Copilot o todavía no se confirmó la suscripción.' };
+    return { ready: true };
+  }
+  if (currentProvider?.authType === 'apikey' && !apiKey?.trim()) {
+    return { ready: false, reason: `Necesitás ingresar tu API Key de ${currentProvider.label} en el panel de Proveedor de IA.` };
+  }
+  return { ready: true };
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Review Modal
@@ -380,6 +395,8 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
 // Main ConfluenceImport
 // ─────────────────────────────────────────────────────────────────────
 export default function ConfluenceImport({ onApply }) {
+  const { buildAIPayload, providerId, loginWithGitHub, isGitHubLoggedIn } = useAuth();
+  const { ready: isAIReady, reason: notReadyReason } = useAIReady();
   const saved = loadCreds();
   const [open, setOpen]         = useState(false);
   const [baseUrl, setBaseUrl]   = useState(saved.baseUrl  || '');
@@ -434,27 +451,47 @@ export default function ConfluenceImport({ onApply }) {
         {/* Toggle button */}
         <button
           type="button"
-          onClick={() => setOpen(o => !o)}
-          className="w-full flex items-center justify-between px-5 py-4 hover:bg-white/[0.02] transition-colors duration-150 group"
+          onClick={() => isAIReady && setOpen(o => !o)}
+          className={`w-full flex items-center justify-between px-5 py-4 transition-colors duration-150 group ${isAIReady ? 'hover:bg-white/[0.02]' : 'cursor-not-allowed opacity-60'}`}
         >
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center">
-              <Link2 size={15} className="text-blue-400" />
+              {isAIReady ? <Link2 size={15} className="text-blue-400" /> : <Lock size={15} className="text-slate-500" />}
             </div>
             <div className="text-left">
               <p className="text-sm font-semibold text-white">Importar desde Confluence</p>
-              <p className="text-xs text-slate-500">Traé una HU y generá el test automáticamente con IA</p>
+              <p className="text-xs text-slate-500">
+                {isAIReady ? 'Traé una HU y generá el test automáticamente con IA' : 'Configurá el Proveedor de IA para usar esta función'}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {connStatus === 'ok'    && <span className="w-2 h-2 rounded-full bg-emerald-400 shadow shadow-emerald-400/50" />}
-            {connStatus === 'error' && <span className="w-2 h-2 rounded-full bg-red-400 shadow shadow-red-400/50" />}
-            {open ? <ChevronUp size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />}
+            {connStatus === 'ok'    && isAIReady && <span className="w-2 h-2 rounded-full bg-emerald-400 shadow shadow-emerald-400/50" />}
+            {connStatus === 'error' && isAIReady && <span className="w-2 h-2 rounded-full bg-red-400 shadow shadow-red-400/50" />}
+            {!isAIReady
+              ? <Lock size={14} className="text-slate-600" />
+              : open ? <ChevronUp size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />
+            }
           </div>
         </button>
 
-        {open && (
+        {/* Lock notice */}
+        {!isAIReady && (
+          <div className="border-t border-[#1e293b] px-5 py-4 flex items-center gap-3 bg-amber-500/5">
+            <Lock size={14} className="text-amber-400 shrink-0" />
+            <p className="text-xs text-amber-300">{notReadyReason}</p>
+            {['github', 'copilot'].includes(providerId) && !isGitHubLoggedIn && (
+              <button type="button" onClick={() => loginWithGitHub(providerId)}
+                className="ml-auto shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#238636] hover:bg-[#2ea043] text-white text-xs font-semibold transition-colors">
+                <GitBranch size={12} /> Conectar GitHub
+              </button>
+            )}
+          </div>
+        )}
+
+        {open && isAIReady && (
           <div className="border-t border-[#1e293b] p-5 space-y-5">
+
 
             {/* Credenciales */}
             <div>
