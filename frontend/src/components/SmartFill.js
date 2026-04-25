@@ -1,18 +1,16 @@
 import React, { useState } from 'react';
 import axios from 'axios';
+import { Sparkles, ChevronDown, ChevronUp, CheckCircle2, X, Zap } from 'lucide-react';
 import './SmartFill.css';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:3001';
 
-const OP_LABELS = {
-  '== true':  'Es true',
-  '== false': 'Es false',
-  '== null':  'Es null',
-  '!= null':  '!= null',
-  '==':       'Igual a',
-  '!=':       'Distinto de',
-  'contains': 'Contiene',
-  'matches':  'Regex',
+const METHOD_COLORS = {
+  GET:    'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+  POST:   'bg-blue-500/10 text-blue-400 border-blue-500/20',
+  PUT:    'bg-amber-500/10 text-amber-400 border-amber-500/20',
+  PATCH:  'bg-orange-500/10 text-orange-400 border-orange-500/20',
+  DELETE: 'bg-red-500/10 text-red-400 border-red-500/20',
 };
 
 export default function SmartFill({ onApply }) {
@@ -29,9 +27,8 @@ export default function SmartFill({ onApply }) {
       const { data } = await axios.post(`${BACKEND_URL}/parse-criteria`, { text });
       if (data.success) setResult(data);
       else setError(data.errors?.[0] || 'No se pudo analizar el texto.');
-    } catch {
-      setError('Error de conexión con el backend.');
-    } finally { setLoading(false); }
+    } catch { setError('Error de conexión con el backend.'); }
+    finally { setLoading(false); }
   };
 
   const handleApply = () => {
@@ -40,143 +37,119 @@ export default function SmartFill({ onApply }) {
 
   const handleClose = () => { setOpen(false); setText(''); setResult(null); setError(''); };
 
-  // Compatibilidad: soporta tanto "scenarios" (array) como "scenario" (legacy)
   const scenarios = result
     ? (Array.isArray(result.scenarios) ? result.scenarios : result.scenario ? [result.scenario] : [])
     : [];
 
   return (
-    <div className={`smart-fill ${open ? 'smart-fill--open' : ''}`}>
+    <div className="bg-[#111827] border border-[#1e293b] rounded-2xl overflow-hidden shadow-lg shadow-black/20 mb-4">
 
-      {/* ── Toggle button ── */}
-      <button type="button" className="smart-fill__toggle" onClick={() => setOpen(o => !o)}>
-        <span className="sf-toggle-left">
-          <span className="sf-icon">✨</span>
-          <span className="sf-title">Smart Fill</span>
-          <span className="sf-subtitle">Pegá tus criterios de aceptación y completamos el formulario</span>
-        </span>
-        <span className="sf-chevron">{open ? '▲' : '▼'}</span>
+      {/* Toggle */}
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-5 py-4 hover:bg-white/[0.02] transition-colors duration-150 group">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-violet-500/10 border border-violet-500/20 flex items-center justify-center">
+            <Sparkles size={15} className="text-violet-400" />
+          </div>
+          <div className="text-left">
+            <p className="text-sm font-semibold text-white">Smart Fill</p>
+            <p className="text-xs text-slate-500">Pegá tus criterios de aceptación y completamos el formulario</p>
+          </div>
+        </div>
+        {open ? <ChevronUp size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />}
       </button>
 
-      {/* ── Panel ── */}
       {open && (
-        <div className="smart-fill__body">
-          <p className="sf-hint">
-            📋 Pegá el texto de <strong>uno o varios criterios</strong> (<strong>Dado / Cuando / Entonces</strong>).
-            Detectamos todos los escenarios automáticamente — revisás antes de aplicar, ningún campo se sobreescribe sin confirmación.
+        <div className="border-t border-[#1e293b] p-5 space-y-4">
+          <p className="text-xs text-slate-400">
+            📋 Pegá el texto de <strong className="text-slate-300">uno o varios criterios</strong> (<strong className="text-slate-300">Dado / Cuando / Entonces</strong>).
+            Detectamos todos los escenarios — revisás antes de aplicar.
           </p>
 
           <textarea
-            className="form-control sf-textarea"
+            className="form-control resize-none font-mono text-xs leading-relaxed"
             value={text}
             onChange={e => setText(e.target.value)}
-            placeholder={`Podés pegar múltiples criterios:\n\nDado que un cliente ingresa con uuid de ClaroPay y profileName != "Básico"\nCuando se invoca /v1/client/data\nEntonces HTTP 200, hasClaroPay = true...\n\nDado que ClaroPay responde 404\nCuando /v1/client/data procesa...\nEntonces HTTP 200, hasClaroPay = false, message = CLIENT_PAY_NOT_FOUND...`}
-            rows={10}
+            placeholder={`Dado que un cliente ingresa con uuid de ClaroPay\nCuando se invoca /v1/client/data\nEntonces HTTP 200, hasClaroPay = true...`}
+            rows={8}
             spellCheck={false}
           />
 
-          <div className="sf-actions">
-            <button
-              type="button"
-              className="btn btn--primary"
-              onClick={handleParse}
-              disabled={loading || !text.trim()}
-            >
-              {loading ? <><span className="spinner" /> Analizando...</> : '✨ Analizar criterios'}
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className="btn btn--primary" onClick={handleParse} disabled={loading || !text.trim()}>
+              {loading ? <><span className="spinner" />Analizando...</> : <><Sparkles size={14} />Analizar criterios</>}
             </button>
             {result && (
               <button type="button" className="btn btn--success" onClick={handleApply}>
-                ✅ Aplicar {scenarios.length > 1 ? `${scenarios.length} escenarios` : 'al formulario'}
+                <CheckCircle2 size={14} /> Aplicar {scenarios.length > 1 ? `${scenarios.length} escenarios` : 'al formulario'}
               </button>
             )}
             <button type="button" className="btn btn--ghost" onClick={handleClose}>
-              Cancelar
+              <X size={14} /> Cancelar
             </button>
           </div>
 
-          {error && <p className="sf-error">⚠ {error}</p>}
+          {error && (
+            <div className="flex items-center gap-2 text-xs text-red-400 p-3 rounded-xl bg-red-500/5 border border-red-500/20">
+              ⚠ {error}
+            </div>
+          )}
 
-          {/* ── Detection preview ── */}
+          {/* Preview */}
           {result && (
-            <div className="sf-preview">
-              <p className="sf-preview__title">
-                🔍 Lo que detectamos — revisá antes de aplicar:
+            <div className="space-y-3 pt-2 border-t border-[#1e293b]">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-slate-300">🔍 Lo que detectamos — revisá antes de aplicar:</p>
                 {scenarios.length > 1 && (
-                  <span className="sf-scenarios-badge">{scenarios.length} escenarios detectados</span>
+                  <span className="px-2 py-0.5 rounded-full bg-violet-500/10 border border-violet-500/20 text-violet-400 text-xs font-semibold">
+                    {scenarios.length} escenarios
+                  </span>
                 )}
-              </p>
+              </div>
 
-              {/* Datos globales */}
-              <div className="sf-detected-grid">
-                <div className="sf-det-item">
-                  <span className="sf-det-label">Feature Name</span>
-                  <span className="sf-det-value">{result.featureName || <em className="sf-empty">No detectado</em>}</span>
+              {/* Global */}
+              <div className="grid grid-cols-2 gap-3 p-3 rounded-xl bg-[#0b0f1a] border border-[#1e293b]">
+                <div>
+                  <span className="text-xs text-slate-500 block mb-0.5">Feature Name</span>
+                  <span className="text-sm text-slate-200">{result.featureName || <em className="text-slate-600">No detectado</em>}</span>
                 </div>
-                <div className="sf-det-item">
-                  <span className="sf-det-label">Endpoint</span>
-                  <code className="sf-det-value sf-code">{result.endpoint || <em className="sf-empty">No detectado</em>}</code>
+                <div>
+                  <span className="text-xs text-slate-500 block mb-0.5">Endpoint</span>
+                  <code className="text-sm text-emerald-400 font-mono">{result.endpoint || <em className="text-slate-600">No detectado</em>}</code>
                 </div>
               </div>
 
-              {/* Un bloque por escenario */}
+              {/* Scenarios */}
               {scenarios.map((s, idx) => (
-                <div key={idx} className="sf-scenario-block">
-                  <p className="sf-scenario-block__title">
-                    <span className="sf-scenario-num">Escenario {idx + 1}</span>
-                    {s.name && <span className="sf-scenario-block__name">{s.name}</span>}
-                  </p>
-
-                  <div className="sf-detected-grid sf-detected-grid--compact">
-                    <div className="sf-det-item">
-                      <span className="sf-det-label">Method</span>
-                      <span className="scenario-tag scenario-tag--method sf-det-value">{s.method}</span>
-                    </div>
-                    <div className="sf-det-item">
-                      <span className="sf-det-label">Status esperado</span>
-                      <code className="sf-code">{s.expectedStatus}</code>
-                    </div>
-                    <div className="sf-det-item">
-                      <span className="sf-det-label">Assertions</span>
-                      <span className="sf-det-value">{s.assertions.length} validación{s.assertions.length !== 1 ? 'es' : ''}</span>
-                    </div>
+                <div key={idx} className="p-4 rounded-xl bg-[#0b0f1a] border border-[#1e293b] space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Escenario {idx + 1}</span>
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-bold border ${METHOD_COLORS[s.method] || METHOD_COLORS.GET}`}>{s.method}</span>
+                    <code className="text-xs text-slate-400 font-mono">HTTP {s.expectedStatus}</code>
+                    {s.name && <span className="text-xs text-slate-400 italic truncate">{s.name}</span>}
                   </div>
 
-                  {s.assertions.length > 0 && (
-                    <div className="sf-assertions-preview">
-                      <p className="sf-assertions-preview__title">Validaciones:</p>
+                  {s.assertions?.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
                       {s.assertions.map((a, i) => (
-                        <div key={i} className="sf-assertion-chip">
-                          <code>response.<strong>{a.field}</strong> {a.operator}{a.value ? ` "${a.value}"` : ''}</code>
-                          <span className="sf-op-label">{OP_LABELS[a.operator] || a.operator}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {s.detectedParams?.length > 0 && (
-                    <div className="sf-assertions-preview">
-                      <p className="sf-assertions-preview__title">🔗 Params / datos:</p>
-                      {s.detectedParams.map((p, i) => (
-                        <div key={i} className="sf-assertion-chip">
-                          <code><strong>{p.key}</strong> = {p.value}</code>
-                        </div>
+                        <span key={i} className="px-2 py-1 rounded-lg bg-[#111827] border border-[#1e293b] text-xs font-mono text-slate-300">
+                          <strong className="text-violet-300">{a.field}</strong> {a.operator}{a.value ? ` "${a.value}"` : ''}
+                        </span>
                       ))}
                     </div>
                   )}
 
                   {s.detectedBody && (
-                    <div className="sf-assertions-preview">
-                      <p className="sf-assertions-preview__title">📦 Request body:</p>
-                      <pre className="sf-body-preview">{s.detectedBody}</pre>
-                    </div>
+                    <pre className="text-xs bg-[#111827] rounded-lg p-3 text-slate-400 overflow-auto border border-[#1e293b] font-mono">
+                      {s.detectedBody}
+                    </pre>
                   )}
                 </div>
               ))}
 
-              <div className="sf-apply-note">
-                💡 Hacé clic en <strong>"Aplicar{scenarios.length > 1 ? ` ${scenarios.length} escenarios` : ' al formulario'}"</strong> para pre-completar los campos.
-                Podés ajustar cualquier cosa antes de generar el feature.
-              </div>
+              <p className="text-xs text-slate-500">
+                💡 Hacé clic en <strong className="text-violet-400">"Aplicar"</strong> para pre-completar los campos. Podés ajustar antes de generar el feature.
+              </p>
             </div>
           )}
         </div>
