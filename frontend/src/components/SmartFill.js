@@ -16,10 +16,11 @@ const METHOD_COLORS = {
 
 // ── Helper: check if AI is ready to use ──────────────────────────────────────
 function useAIReady() {
-  const { providerId, apiKey, currentProvider, isGitHubLoggedIn, copilotStatus } = useAuth();
+  const { providerId, apiKey, currentProvider, isGitHubLoggedIn, copilotStatus, copilotChecking } = useAuth();
   if (['github', 'copilot'].includes(providerId)) {
     if (!isGitHubLoggedIn) return { ready: false, reason: 'Necesitás conectar tu cuenta de GitHub para usar este proveedor.' };
-    if (providerId === 'copilot' && copilotStatus !== 'ok') return { ready: false, reason: 'Se verificó que no tenés acceso a GitHub Copilot o todavía no se confirmó la suscripción.' };
+    // While checking copilot access → allow usage (the API call will fail if no access)
+    if (providerId === 'copilot' && copilotStatus === 'error') return { ready: false, reason: 'Tu cuenta no tiene suscripción activa de GitHub Copilot. Usá GitHub Models (gratis).' };
     return { ready: true };
   }
   if (currentProvider?.authType === 'apikey' && !apiKey?.trim()) {

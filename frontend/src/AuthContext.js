@@ -152,10 +152,18 @@ export function AuthProvider({ children }) {
       } else {
         setCopilotStatus('error');
         setCopilotError(data.error || 'Sin suscripción activa de Copilot.');
+        // Auto-switch to GitHub Models (free) if copilot fails
+        setProviderId('github');
+        _setModel('gpt-4o-mini');
+        localStorage.setItem(K.MODEL, 'gpt-4o-mini');
       }
     } catch (err) {
       setCopilotStatus('error');
       setCopilotError(err?.response?.data?.error || 'No se pudo verificar Copilot.');
+      // Auto-switch to GitHub Models (free) on error
+      setProviderId('github');
+      _setModel('gpt-4o-mini');
+      localStorage.setItem(K.MODEL, 'gpt-4o-mini');
     } finally {
       setCopilotChecking(false);
     }

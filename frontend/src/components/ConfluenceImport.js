@@ -47,10 +47,10 @@ const METHOD_COLORS = {
 
 // ── Helper: check if AI is ready to use ──────────────────────────────────────
 function useAIReady() {
-  const { providerId, apiKey, currentProvider, isGitHubLoggedIn, copilotStatus } = useAuth();
+  const { providerId, apiKey, currentProvider, isGitHubLoggedIn, copilotStatus, copilotChecking } = useAuth();
   if (['github', 'copilot'].includes(providerId)) {
     if (!isGitHubLoggedIn) return { ready: false, reason: 'Necesitás conectar tu cuenta de GitHub para usar este proveedor.' };
-    if (providerId === 'copilot' && copilotStatus !== 'ok') return { ready: false, reason: 'Se verificó que no tenés acceso a GitHub Copilot o todavía no se confirmó la suscripción.' };
+    if (providerId === 'copilot' && copilotStatus === 'error') return { ready: false, reason: 'Tu cuenta no tiene suscripción activa de GitHub Copilot. Usá GitHub Models (gratis).' };
     return { ready: true };
   }
   if (currentProvider?.authType === 'apikey' && !apiKey?.trim()) {
@@ -395,7 +395,7 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
 // Main ConfluenceImport
 // ─────────────────────────────────────────────────────────────────────
 export default function ConfluenceImport({ onApply }) {
-  const { buildAIPayload, providerId, loginWithGitHub, isGitHubLoggedIn } = useAuth();
+  const { buildAIPayload, providerId, loginWithGitHub, isGitHubLoggedIn, githubUser, currentProvider } = useAuth();
   const { ready: isAIReady, reason: notReadyReason } = useAIReady();
   const saved = loadCreds();
   const [open, setOpen]         = useState(false);
@@ -429,7 +429,11 @@ export default function ConfluenceImport({ onApply }) {
     if (!pageUrl.trim()) return;
     setFetchLoading(true); setFetchError(''); setReviewData(null);
     try {
-      const { data } = await axios.post(`${BACKEND_URL}/confluence-fetch`, { baseUrl, email, token, authType, pageUrl });
+      const aiPayload = buildAIPayload({});
+      const { data } = await axios.post(`${BACKEND_URL}/confluence-fetch`, {
+        baseUrl, email, token, authType, pageUrl,
+        ...aiPayload,
+      });
       if (data.success) { setReviewTitle(data.pageTitle || 'HU importada'); setReviewData(data); }
       else setFetchError(data.error || 'Error al obtener la página');
     } catch (err) { setFetchError(err?.response?.data?.error || 'Error de conexión con el backend'); }
@@ -466,6 +470,17 @@ export default function ConfluenceImport({ onApply }) {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {isGitHubLoggedIn && isAIReady && (
+              <span className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-green-500/10 border border-green-500/20 text-green-400 text-xs font-semibold">
+                {githubUser?.avatar && <img src={githubUser.avatar} alt="" className="w-3.5 h-3.5 rounded-full" />}
+                {githubUser?.login}
+              </span>
+            )}
+            {isAIReady && (
+              <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-semibold">
+                <Link2 size={10} /> {currentProvider.label}
+              </span>
+            )}
             {connStatus === 'ok'    && isAIReady && <span className="w-2 h-2 rounded-full bg-emerald-400 shadow shadow-emerald-400/50" />}
             {connStatus === 'error' && isAIReady && <span className="w-2 h-2 rounded-full bg-red-400 shadow shadow-red-400/50" />}
             {!isAIReady
