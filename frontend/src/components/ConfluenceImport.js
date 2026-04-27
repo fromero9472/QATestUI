@@ -63,6 +63,7 @@ function useAIReady() {
 // Review Modal
 // ─────────────────────────────────────────────────────────────────────
 function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
+  const { buildAIPayload, currentProvider } = useAuth();
   const [edited, setEdited]               = useState(() => JSON.parse(JSON.stringify(result)));
   const [tab, setTab]                     = useState('preview');
   const [refineMode, setRefineMode]       = useState('ask');
@@ -73,6 +74,8 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
   const [askAnswer, setAskAnswer]         = useState(null);
   const [askSuggestion, setAskSuggestion] = useState(null);
   const [askSuggestionLabel, setAskSuggestionLabel] = useState('');
+
+  const providerLabel = currentProvider?.label || 'IA';
 
   const scenarios = Array.isArray(edited.scenarios) ? edited.scenarios : [];
 
@@ -91,7 +94,12 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
     setRefineLoading(true); setRefineError(''); setAskAnswer(null); setAskSuggestion(null);
     setHistory(h => [...h, JSON.parse(JSON.stringify(edited))]);
     try {
-      const { data } = await axios.post(`${BACKEND_URL}/confluence-refine`, { rawText, refinementPrompt: refinePrompt });
+      const aiPayload = buildAIPayload({});
+      const { data } = await axios.post(`${BACKEND_URL}/confluence-refine`, {
+        rawText,
+        refinementPrompt: refinePrompt,
+        ...aiPayload,
+      });
       if (data.success) { setEdited(data); setRefinePrompt(''); setTab('preview'); }
       else setRefineError(data.error || 'Error al refinar');
     } catch (err) { setRefineError(err?.response?.data?.error || 'Error de conexión'); }
@@ -102,7 +110,12 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
     if (!refinePrompt.trim()) return;
     setRefineLoading(true); setRefineError(''); setAskAnswer(null); setAskSuggestion(null);
     try {
-      const { data } = await axios.post(`${BACKEND_URL}/confluence-ask`, { rawText, question: refinePrompt });
+      const aiPayload = buildAIPayload({});
+      const { data } = await axios.post(`${BACKEND_URL}/confluence-ask`, {
+        rawText,
+        question: refinePrompt,
+        ...aiPayload,
+      });
       if (data.success) {
         setAskAnswer(data.answer);
         if (data.hasSuggestion && data.suggestion) { setAskSuggestion(data.suggestion); setAskSuggestionLabel(data.suggestionLabel || 'Aplicar cambio sugerido'); }
@@ -123,6 +136,7 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
     setEdited(history[history.length - 1]); setHistory(h => h.slice(0, -1));
   };
 
+
   const TABS = [
     { id: 'preview', icon: <Eye size={13} />, label: 'Preview editable' },
     { id: 'refine',  icon: <Sparkles size={13} />, label: 'Refinar con IA' },
@@ -141,7 +155,7 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
               <Sparkles size={15} className="text-violet-400" />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-white">Revisá el análisis de Groq</h2>
+              <h2 className="text-sm font-bold text-white">Revisá el análisis de {providerLabel}</h2>
               <p className="text-xs text-slate-500">Importado desde: <span className="text-slate-400">{pageTitle}</span></p>
             </div>
           </div>
@@ -182,6 +196,7 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
             </pre>
           )}
 
+
           {/* Refine tab */}
           {tab === 'refine' && (
             <div className="space-y-4">
@@ -203,7 +218,7 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
               {/* Ask mode */}
               {refineMode === 'ask' && (
                 <>
-                  <p className="text-xs text-slate-400">Preguntale a Groq sobre el contenido de la HU. Si la respuesta implica un cambio, te va a ofrecer aplicarlo.</p>
+                  <p className="text-xs text-slate-400">Preguntale a {providerLabel} sobre el contenido de la HU. Si la respuesta implica un cambio, te va a ofrecer aplicarlo.</p>
                   <div className="flex flex-wrap gap-2">
                     {ASK_SUGGESTIONS.map((s, i) => (
                       <button key={i} type="button" onClick={() => setRefinePrompt(s)}
@@ -218,12 +233,12 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
                     onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); !refineLoading && refinePrompt.trim() && handleAsk(); } }} />
                   {refineError && <p className="text-xs text-red-400 flex items-center gap-1"><XCircle size={13} />{refineError}</p>}
                   <button type="button" className="btn btn--primary" onClick={handleAsk} disabled={refineLoading || !refinePrompt.trim()}>
-                    {refineLoading ? <><span className="spinner" />Consultando...</> : <><MessageSquare size={14} />Preguntar a Groq</>}
+                    {refineLoading ? <><span className="spinner" />Consultando...</> : <><MessageSquare size={14} />Preguntar a {providerLabel}</>}
                   </button>
 
                   {askAnswer && (
                     <div className="p-4 rounded-xl bg-violet-500/5 border border-violet-500/20 space-y-3">
-                      <p className="text-xs font-semibold text-violet-400">🤖 Respuesta de Groq</p>
+                      <p className="text-xs font-semibold text-violet-400">🤖 Respuesta de {providerLabel}</p>
                       <p className="text-sm text-slate-300">{askAnswer}</p>
                       {askSuggestion && (
                         <div className="flex items-center justify-between pt-3 border-t border-violet-500/20">
@@ -249,7 +264,7 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
               {/* Instruct mode */}
               {refineMode === 'instruct' && (
                 <>
-                  <p className="text-xs text-slate-400">Escribí instrucciones para que Groq corrija o mejore el análisis. El resultado reemplaza el preview (podés deshacer).</p>
+                  <p className="text-xs text-slate-400">Escribí instrucciones para que {providerLabel} corrija o mejore el análisis. El resultado reemplaza el preview (podés deshacer).</p>
                   <div className="flex flex-wrap gap-2">
                     {REFINE_SUGGESTIONS.map((s, i) => (
                       <button key={i} type="button" onClick={() => setRefinePrompt(p => p ? `${p}\n${s}` : s)}
@@ -264,7 +279,7 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
                   {refineError && <p className="text-xs text-red-400 flex items-center gap-1"><XCircle size={13} />{refineError}</p>}
                   <div className="flex gap-2">
                     <button type="button" className="btn btn--primary" onClick={handleRefine} disabled={refineLoading || !refinePrompt.trim()}>
-                      {refineLoading ? <><span className="spinner" />Re-analizando...</> : <><Sparkles size={14} />Re-analizar con Groq</>}
+                      {refineLoading ? <><span className="spinner" />Re-analizando...</> : <><Sparkles size={14} />Re-analizar con {providerLabel}</>}
                     </button>
                     {history.length > 0 && (
                       <button type="button" className="btn btn--ghost" onClick={handleUndo}><Undo2 size={14} />Deshacer</button>

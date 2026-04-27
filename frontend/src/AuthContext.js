@@ -78,6 +78,7 @@ export function AuthProvider({ children }) {
   const [copilotStatus,  setCopilotStatus]  = useState(null); // null | 'ok' | 'error'
   const [copilotError,   setCopilotError]   = useState('');
   const [copilotChecking, setCopilotChecking] = useState(false);
+  const [authError, setAuthError] = useState('');
 
   // ── Setters with persistence ──────────────────────────────────────────────────
   const setProviderId = (v) => { _setProviderId(v); localStorage.setItem(K.PROVIDER, v); };
@@ -113,17 +114,22 @@ export function AuthProvider({ children }) {
       const user = { login, name, avatar };
       setGithubToken(token);
       setGithubUser(user);
-      // Switch to copilot by default after login (or keep what was stored)
-      const stored = localStorage.getItem(K.PROVIDER);
-      if (!stored || stored === 'copilot' || stored === 'github') {
+      setAuthError('');
+      // Restore target provider chosen before OAuth (copilot/github)
+      const target = params.get('auth_target') || localStorage.getItem(K.PROVIDER) || 'copilot';
+      if (target === 'github') {
+        setProviderId('github');
+        setModel('gpt-4o-mini');
+      } else {
         setProviderId('copilot');
         setModel('claude-3.5-sonnet');
       }
       window.history.replaceState({}, '', window.location.pathname);
     }
     if (authError) {
-      // Surface this as a console warning; components can subscribe if needed
-      console.warn('GitHub OAuth error:', decodeURIComponent(authError));
+      const decoded = decodeURIComponent(authError);
+      console.warn('GitHub OAuth error:', decoded);
+      setAuthError(decoded);
       window.history.replaceState({}, '', window.location.pathname);
     }
   // eslint-disable-next-line
@@ -186,17 +192,54 @@ export function AuthProvider({ children }) {
   }, []);
 
   // ── GitHub login ──────────────────────────────────────────────────────────────
-  const loginWithGitHub = useCallback((targetProvider = 'copilot') => {
+  const loginWithGitHub = useCallback((targetProvider = 'copilot', opts = {}) => {
+    // Chequear si el logout anterior marcó que debemos forzar reauth
+    const shouldForce = opts?.forceLogin || sessionStorage.getItem('qatestui_force_next_login') === '1';
+    sessionStorage.removeItem('qatestui_force_next_login'); // Limpiar flag
+
+    // Si es force login (cambiar cuenta), limpiar sesión actual primero
+    if (shouldForce) {
+      console.log('[AuthContext] Force login requested - clearing local session');
+      setGithubToken('');
+      setGithubUser(null);
+      setCopilotStatus(null);
+      setCopilotError('');
+      localStorage.removeItem(K.COPILOT_MODELS);
+      localStorage.removeItem(K.GITHUB_TOKEN);
+      localStorage.removeItem(K.GITHUB_USER);
+    }
+
     localStorage.setItem(K.PROVIDER, targetProvider);
-    window.location.href = `${BACKEND_URL}/auth/github`;
+    const target = targetProvider === 'github' ? 'github' : 'copilot';
+    const forceLogin = shouldForce ? '1' : '0';
+    const loginUrl = `${BACKEND_URL}/auth/github?provider=${encodeURIComponent(target)}&force_login=${forceLogin}&ts=${Date.now()}`;
+    console.log('[AuthContext] Redirecting to GitHub OAuth:', { target, forceLogin: shouldForce, url: loginUrl });
+    window.location.assign(loginUrl);
   }, []);
 
   // ── GitHub logout ─────────────────────────────────────────────────────────────
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    console.log('[AuthContext] Logging out - clearing session');
+    try {
+      await axios.get(`${BACKEND_URL}/auth/logout`, { withCredentials: true });
+    } catch (err) {
+      console.warn('[AuthContext] Logout request failed:', err);
+    }
+
+    // Limpiar estado local
     setGithubToken('');
     setGithubUser(null);
     setCopilotStatus(null);
+    setCopilotError('');
+    setCopilotChecking(false);
+    setAuthError('');
     localStorage.removeItem(K.COPILOT_MODELS);
+    localStorage.removeItem(K.GITHUB_TOKEN);
+    localStorage.removeItem(K.GITHUB_USER);
+
+    // Marcar que el próximo login debe ser forzado
+    sessionStorage.setItem('qatestui_force_next_login', '1');
+
     if (['github', 'copilot'].includes(providerId)) changeProvider('groq');
   }, [providerId, changeProvider]);
 
@@ -227,6 +270,7 @@ export function AuthProvider({ children }) {
       loginWithGitHub, logout,
       // copilot
       copilotStatus, copilotError, copilotChecking,
+      authError,
       checkCopilotAccess,
       // helper
       buildAIPayload,

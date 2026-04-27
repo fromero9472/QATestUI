@@ -9,6 +9,7 @@ const { body, validationResult } = require('express-validator');
 const Groq = require('groq-sdk');
 const OpenAI = require('openai');
 const axios = require('axios').default || require('axios');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -55,7 +56,7 @@ async function callAI({ provider = 'groq', apiKey, model, messages, ollamaUrl })
     const client = apiKey ? new Groq({ apiKey }) : groq;
     const mdl = model || 'llama-3.3-70b-versatile';
     const completion = await client.chat.completions.create({
-      model: mdl, temperature: 0.1, max_tokens: 2048, messages,
+      model: mdl, temperature: 0.1, max_tokens: 16384, messages,
     });
     const raw = completion.choices[0]?.message?.content?.trim();
     if (!raw) throw new Error('Respuesta vacía de Groq');
@@ -68,7 +69,7 @@ async function callAI({ provider = 'groq', apiKey, model, messages, ollamaUrl })
     const client = new OpenAI({ apiKey: key });
     const mdl = model || 'gpt-4o-mini';
     const completion = await client.chat.completions.create({
-      model: mdl, temperature: 0.1, max_tokens: 2048, messages,
+      model: mdl, temperature: 0.1, max_tokens: 16384, messages,
     });
     const raw = completion.choices[0]?.message?.content?.trim();
     if (!raw) throw new Error('Respuesta vacía de OpenAI');
@@ -85,7 +86,7 @@ async function callAI({ provider = 'groq', apiKey, model, messages, ollamaUrl })
     });
     const mdl = model || 'gpt-4o-mini';
     const completion = await client.chat.completions.create({
-      model: mdl, temperature: 0.1, max_tokens: 2048, messages,
+      model: mdl, temperature: 0.1, max_tokens: 16384, messages,
     });
     const raw = completion.choices[0]?.message?.content?.trim();
     if (!raw) throw new Error('Respuesta vacía de GitHub Models');
@@ -112,7 +113,7 @@ async function callAI({ provider = 'groq', apiKey, model, messages, ollamaUrl })
     });
 
     const completion = await client.chat.completions.create({
-      model: mdl, temperature: 0.1, max_tokens: 2048, messages,
+      model: mdl, temperature: 0.1, max_tokens: 16384, messages,
     });
     const raw = completion.choices[0]?.message?.content?.trim();
     if (!raw) throw new Error('Respuesta vacía de GitHub Copilot');
@@ -135,6 +136,139 @@ async function callAI({ provider = 'groq', apiKey, model, messages, ollamaUrl })
   throw new Error(`Proveedor de IA desconocido: ${provider}`);
 }
 
+// ── Helper: Extract and clean JSON from AI response ──
+function extractJsonFromAI(rawResponse, context = '') {
+  const logPrefix = context ? `[${context}]` : '[JSON Extract]';
+
+  // 1. Intentar extraer de markdown code blocks (```json ... ``` o ``` ... ```)
+  const markdownMatch = rawResponse.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (markdownMatch) {
+    console.log(`${logPrefix} Found markdown code block`);
+    return markdownMatch[1].trim();
+  }
+
+  // 2. Buscar el primer objeto JSON balanceado
+  const start = rawResponse.indexOf('{');
+  if (start === -1) {
+    console.error(`${logPrefix} No '{' found in response`);
+    return null;
+  }
+
+  let depth = 0, inString = false, escape = false;
+  for (let i = start; i < rawResponse.length; i++) {
+    const ch = rawResponse[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\') { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        console.log(`${logPrefix} Found balanced JSON object`);
+        return rawResponse.slice(start, i + 1);
+      }
+    }
+  }
+
+  console.error(`${logPrefix} Unbalanced JSON braces`);
+  return null;
+}
+
+// ── Helper: Clean and repair malformed JSON ──
+function cleanJSON(jsonStr) {
+  try {
+    // Intentar parse directo
+    return JSON.parse(jsonStr);
+  } catch (e) {
+    console.warn('[JSON Clean] Initial parse failed, attempting aggressive repairs...');
+
+    let cleaned = jsonStr;
+
+    // Reparación 1: Remover últimas comas antes de } o ]
+    cleaned = cleaned.replace(/,\s*([}\]])/g, '$1');
+
+    // Reparación 2: Agregar comas faltantes entre array elements o objetos
+    cleaned = cleaned.replace(/"\s*\n\s*(?=["{\[])/g, '",\n');
+    cleaned = cleaned.replace(/}\s*\n\s*(?=["{])/g, '},\n');
+    cleaned = cleaned.replace(/]\s*\n\s*(?=["{])/g, '],\n');
+
+    // Reparación 3: Remover comillas mal colocadas o duplicadas
+    cleaned = cleaned.replace(/""/g, '"');
+
+    // Reparación 4: Fijar strings que cruzan líneas
+    cleaned = cleaned.replace(/: "([^"]*)\n([^"]*)"(,?)/g, ': "$1 $2"$3');
+
+    // Reparación 5: Agregar comas entre objetos en arrays que faltan
+    cleaned = cleaned.replace(/}\s*\n\s*{/g, '},\n{');
+    cleaned = cleaned.replace(/]\s*\n\s*[{\[]/g, '],\n');
+
+    // Reparación 6: Limpiar espacios en blanco anormales
+    cleaned = cleaned.replace(/\s+/g, ' ');
+
+    // Intentar nuevo parse
+    try {
+      return JSON.parse(cleaned);
+    } catch (e2) {
+      console.warn('[JSON Clean] Aggressive repair also failed, attempting extraction of valid sections...');
+
+      // Reparación 7: Extraer solo secciones válidas
+      // Buscar arrays de scenarios
+      const scenariosMatch = cleaned.match(/"scenarios"\s*:\s*\[([\s\S]*?)\](?=\s*[,}])/);
+      if (scenariosMatch) {
+        // Intentar reparar solo el array de scenarios
+        let scenarios = '[' + scenariosMatch[1] + ']';
+        scenarios = scenarios.replace(/,\s*([}\]])/g, '$1');
+        scenarios = scenarios.replace(/}\s*\n*\s*{/g, '},{');
+
+        try {
+          JSON.parse(scenarios);
+          console.warn('[JSON Clean] Using partial scenarios extraction');
+
+          // Extraer otros campos del JSON parcial
+          const featureMatch = cleaned.match(/"featureName"\s*:\s*"([^"]*)"/);
+          const endpointMatch = cleaned.match(/"endpoint"\s*:\s*"([^"]*)"/);
+
+          return {
+            featureName: featureMatch ? featureMatch[1] : 'Feature',
+            endpoint: endpointMatch ? endpointMatch[1] : '/',
+            scenarios: JSON.parse(scenarios),
+            baseUrl: '',
+            enableOcp: false,
+            ocpToken: '',
+            namespace: ''
+          };
+        } catch (e3) {
+          // Si todo falla, devolver estructura mínima válida
+          console.warn('[JSON Clean] Using fallback minimal structure');
+          return {
+            featureName: 'Feature from Confluence',
+            endpoint: '/',
+            scenarios: [],
+            baseUrl: '',
+            enableOcp: false,
+            ocpToken: '',
+            namespace: ''
+          };
+        }
+      }
+
+      // Si no hay scenarios, devolver estructura mínima
+      console.warn('[JSON Clean] No valid scenarios found, using minimal structure');
+      return {
+        featureName: 'Feature from Confluence',
+        endpoint: '/',
+        scenarios: [],
+        baseUrl: '',
+        enableOcp: false,
+        ocpToken: '',
+        namespace: ''
+      };
+    }
+  }
+}
+
+
 // ─── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors({ origin: FRONTEND_URL, credentials: true }));
 app.use(express.json());
@@ -152,22 +286,61 @@ app.use(session({
 
 app.get('/auth/github', (req, res) => {
   const clientId = process.env.GITHUB_CLIENT_ID;
+  const provider = req.query.provider === 'github' ? 'github' : 'copilot';
+  const forceLogin = req.query.force_login === '1';
+
+  console.log('[OAuth] GitHub auth initiated:', { provider, forceLogin, query: req.query });
+
   if (!clientId) {
     return res.redirect(`${FRONTEND_URL}?auth_error=GITHUB_CLIENT_ID+no+configurado`);
   }
+  const oauthState = JSON.stringify({
+    provider,
+    nonce: crypto.randomBytes(12).toString('hex'),
+  });
+  req.session.githubOauthState = oauthState;
+
   // read:user para identificar al usuario
   // (Copilot no requiere scope OAuth extra — el acceso se valida con la suscripción)
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: `${req.protocol}://${req.get('host')}/auth/github/callback`,
     scope: 'read:user',
+    state: Buffer.from(oauthState, 'utf8').toString('base64url'),
   });
-  res.redirect(`https://github.com/login/oauth/authorize?${params}`);
+  if (forceLogin) {
+    // Forzar reautenticación completa - GitHub mostrará pantalla de login
+    // Nota: esto funciona mejor después de revocar el token anterior
+    params.set('prompt', 'login');
+    console.log('[OAuth] Force login enabled - adding prompt=login parameter');
+  }
+
+  const authUrl = `https://github.com/login/oauth/authorize?${params}`;
+  console.log('[OAuth] Redirecting to:', authUrl.replace(clientId, 'CLIENT_ID'));
+  res.redirect(authUrl);
 });
 
 app.get('/auth/github/callback', async (req, res) => {
-  const { code } = req.query;
+  const { code, state } = req.query;
   if (!code) return res.redirect(`${FRONTEND_URL}?auth_error=No+se+recibió+código+de+GitHub`);
+
+  let authTarget = 'copilot';
+  try {
+    const decodedState = state ? Buffer.from(state, 'base64url').toString('utf8') : '';
+    if (decodedState === req.session.githubOauthState) {
+      const parsedState = JSON.parse(decodedState);
+      authTarget = parsedState.provider === 'github' ? 'github' : 'copilot';
+    } else if (state === 'github' || state === 'copilot') {
+      // Backward compatibility with previous plain provider state.
+      authTarget = state;
+    } else {
+      return res.redirect(`${FRONTEND_URL}?auth_error=OAuth+state+inválido+o+expirado`);
+    }
+  } catch {
+    return res.redirect(`${FRONTEND_URL}?auth_error=OAuth+state+inválido`);
+  } finally {
+    delete req.session.githubOauthState;
+  }
 
   try {
     const { data } = await axios.post(
@@ -196,6 +369,7 @@ app.get('/auth/github/callback', async (req, res) => {
       github_login: user.login,
       github_name:  user.name || user.login,
       github_avatar: user.avatar_url || '',
+      auth_target: authTarget,
     });
     res.redirect(`${FRONTEND_URL}?${params}`);
   } catch (err) {
@@ -529,28 +703,23 @@ app.post('/parse-criteria', async (req, res) => {
       ],
     });
 
+    console.log(`[parse-criteria] Provider: ${provider}, Model: ${model}, Response length: ${raw.length} chars`);
 
-    // Extraer el primer JSON objeto balanceado de la respuesta
-    const extractBalancedJson = (str) => {
-      const start = str.indexOf('{');
-      if (start === -1) return null;
-      let depth = 0, inString = false, escape = false;
-      for (let i = start; i < str.length; i++) {
-        const ch = str[i];
-        if (escape)          { escape = false; continue; }
-        if (ch === '\\')     { escape = true;  continue; }
-        if (ch === '"')      { inString = !inString; continue; }
-        if (inString)        continue;
-        if (ch === '{')      depth++;
-        else if (ch === '}') { depth--; if (depth === 0) return str.slice(start, i + 1); }
-      }
-      return null;
-    };
+    const jsonStr = extractJsonFromAI(raw, 'parse-criteria');
 
-    const jsonStr = extractBalancedJson(raw);
-    if (!jsonStr) throw new Error('La IA no devolvió JSON válido');
+    if (!jsonStr) {
+      console.error('[parse-criteria] AI raw response:', raw.substring(0, 500));
+      throw new Error(`El modelo ${model} no devolvió JSON válido. Respuesta: "${raw.substring(0, 100)}..."`);
+    }
 
-    const parsed = JSON.parse(jsonStr);
+    let parsed;
+    try {
+      parsed = cleanJSON(jsonStr);
+    } catch (parseErr) {
+      console.error('[parse-criteria] JSON parse error:', parseErr.message);
+      console.error('[parse-criteria] Extracted string:', jsonStr.substring(0, 300));
+      throw parseErr;
+    }
 
     // ── Post-proceso determinista (regex sobre el texto original) ──
     postProcess(parsed, text);
@@ -577,12 +746,12 @@ app.post('/parse-criteria', async (req, res) => {
     return res.json({ success: true, ...parsed });
 
   } catch (err) {
-    console.error('Error AI provider:', err.message);
-    const isApiError = err?.error?.type || err?.status;
+    console.error('[parse-criteria] Error:', err.message);
+    const isApiError = err?.error?.type || err?.status || err?.response?.status;
     return res.status(500).json({
       success: false,
       errors: [isApiError
-        ? `Error de API (${provider}): ${err.message}`
+        ? `Error de API (${provider}/${model}): ${err.message}`
         : err.message || 'No se pudo analizar el criterio. Verificá el formato del texto.'
       ]
     });
@@ -733,7 +902,7 @@ app.post('/confluence-test', async (req, res) => {
 
 // ─── POST /confluence-fetch ────────────────────────────────────────────────────
 app.post('/confluence-fetch', async (req, res) => {
-  const { baseUrl, email, token, authType, pageUrl } = req.body;
+  const { baseUrl, email, token, authType, pageUrl, provider = 'groq', apiKey, model, ollamaUrl } = req.body;
   if (!baseUrl || !token || !pageUrl) {
     return res.status(400).json({ success: false, error: 'Faltan parámetros' });
   }
@@ -796,55 +965,39 @@ app.post('/confluence-fetch', async (req, res) => {
       .replace(/\n{3,}/g, '\n\n')
       .trim();
 
-    // Truncar a 6000 chars para no exceder el contexto de Groq
-    const MAX_CHARS = 6000;
+    // Truncar para no exceder el contexto de los modelos
+    // Con max_tokens: 16384 para output, dejamos ~12K para input
+    const MAX_CHARS = 12000;
     const truncated = plainText.length > MAX_CHARS
       ? plainText.slice(0, MAX_CHARS) + '\n\n[...contenido truncado para análisis...]'
       : plainText;
 
     const fullText = `${title}\n\n${truncated}`;
 
-    // Llamar a Groq con el mismo pipeline que /parse-criteria
-    if (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY === 'your_api_key_here') {
-      return res.status(503).json({ success: false, error: 'GROQ_API_KEY no configurada' });
-    }
-
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      temperature: 0.1,
-      max_tokens: 4096,
+    // Llamar a la IA seleccionada (soporta Groq, OpenAI, GitHub, Copilot, Ollama)
+    const raw = await callAI({
+      provider, apiKey, model, ollamaUrl,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user',   content: fullText },
       ],
     });
 
-    const raw = completion.choices[0]?.message?.content?.trim();
-    if (!raw) throw new Error('Respuesta vacía de Groq');
+    console.log(`[confluence-fetch] Provider: ${provider}, Model: ${model}, Response length: ${raw.length} chars`);
 
-    // Extraer el primer JSON objeto balanceado de la respuesta
-    const extractBalancedJson = (str) => {
-      const start = str.indexOf('{');
-      if (start === -1) return null;
-      let depth = 0;
-      let inString = false;
-      let escape = false;
-      for (let i = start; i < str.length; i++) {
-        const ch = str[i];
-        if (escape)          { escape = false; continue; }
-        if (ch === '\\')     { escape = true;  continue; }
-        if (ch === '"')      { inString = !inString; continue; }
-        if (inString)        continue;
-        if (ch === '{')      depth++;
-        else if (ch === '}') { depth--; if (depth === 0) return str.slice(start, i + 1); }
-      }
-      return null;
-    };
+    const jsonStr = extractJsonFromAI(raw, 'confluence-fetch');
+    if (!jsonStr) {
+      console.error('[confluence-fetch] AI raw response:', raw.substring(0, 500));
+      throw new Error(`El modelo ${model} no devolvió JSON válido`);
+    }
 
-    const jsonStr = extractBalancedJson(raw);
-    if (!jsonStr) throw new Error('La IA no devolvió JSON válido');
-
-    const parsed = JSON.parse(jsonStr);
+    let parsed;
+    try {
+      parsed = cleanJSON(jsonStr);
+    } catch (parseErr) {
+      console.error('[confluence-fetch] JSON parse error:', parseErr.message);
+      throw parseErr;
+    }
     postProcess(parsed, fullText);
 
     if (!Array.isArray(parsed.scenarios)) {
@@ -885,12 +1038,9 @@ app.post('/confluence-fetch', async (req, res) => {
 // ─── POST /confluence-ask ──────────────────────────────────────────────────────
 // Responde preguntas sobre el contenido de la HU y, si aplica, sugiere cambios
 app.post('/confluence-ask', async (req, res) => {
-  const { rawText, question } = req.body;
+  const { rawText, question, provider = 'groq', apiKey, model, ollamaUrl } = req.body;
   if (!rawText || !question) {
     return res.status(400).json({ success: false, error: 'Faltan rawText o question' });
-  }
-  if (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY === 'your_api_key_here') {
-    return res.status(503).json({ success: false, error: 'GROQ_API_KEY no configurada' });
   }
 
   const ASK_PROMPT = `Sos un asistente experto en QA que analiza Historias de Usuario de Confluence.
@@ -917,39 +1067,29 @@ Si la respuesta es no, no sugerir nada.`;
   try {
     const combinedText = `CONTENIDO DE LA HU:\n${rawText}\n\nPREGUNTA DEL USUARIO:\n${question}`;
 
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      temperature: 0.2,
-      max_tokens: 4096,
+    const raw = await callAI({
+      provider, apiKey, model, ollamaUrl,
       messages: [
         { role: 'system', content: ASK_PROMPT },
         { role: 'user',   content: combinedText },
       ],
     });
 
-    const raw = completion.choices[0]?.message?.content?.trim();
-    if (!raw) throw new Error('Respuesta vacía de Groq');
+    console.log(`[confluence-ask] Provider: ${provider}, Model: ${model}, Response length: ${raw.length} chars`);
 
-    const extractBalancedJson = (str) => {
-      const start = str.indexOf('{');
-      if (start === -1) return null;
-      let depth = 0, inString = false, escape = false;
-      for (let i = start; i < str.length; i++) {
-        const ch = str[i];
-        if (escape)          { escape = false; continue; }
-        if (ch === '\\')     { escape = true;  continue; }
-        if (ch === '"')      { inString = !inString; continue; }
-        if (inString)        continue;
-        if (ch === '{')      depth++;
-        else if (ch === '}') { depth--; if (depth === 0) return str.slice(start, i + 1); }
-      }
-      return null;
-    };
+    const jsonStr = extractJsonFromAI(raw, 'confluence-ask');
+    if (!jsonStr) {
+      console.error('[confluence-ask] AI raw response:', raw.substring(0, 500));
+      throw new Error(`El modelo ${model} no devolvió JSON válido`);
+    }
 
-    const jsonStr = extractBalancedJson(raw);
-    if (!jsonStr) throw new Error('La IA no devolvió JSON válido');
-
-    const result = JSON.parse(jsonStr);
+    let result;
+    try {
+      result = cleanJSON(jsonStr);
+    } catch (parseErr) {
+      console.error('[confluence-ask] JSON parse error:', parseErr.message);
+      throw parseErr;
+    }
 
     // Si hay sugerencia, post-procesarla igual que el resto
     if (result.hasSuggestion && result.suggestion) {
@@ -968,21 +1108,18 @@ Si la respuesta es no, no sugerir nada.`;
 
     return res.json({ success: true, ...result });
   } catch (err) {
-    console.error('Error confluence-ask:', err.message);
+    console.error('[confluence-ask] Error:', err.message);
     return res.status(500).json({ success: false, error: `Error al procesar la pregunta: ${err.message}` });
   }
 });
 
 // ─── POST /confluence-refine ───────────────────────────────────────────────────
 // Toma el rawText ya obtenido + un prompt de refinamiento del usuario,
-// y vuelve a llamar a Groq para mejorar el análisis
+// y vuelve a llamar a la IA para mejorar el análisis
 app.post('/confluence-refine', async (req, res) => {
-  const { rawText, refinementPrompt } = req.body;
+  const { rawText, refinementPrompt, provider = 'groq', apiKey, model, ollamaUrl } = req.body;
   if (!rawText || !refinementPrompt) {
     return res.status(400).json({ success: false, error: 'Faltan rawText o refinementPrompt' });
-  }
-  if (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY === 'your_api_key_here') {
-    return res.status(503).json({ success: false, error: 'GROQ_API_KEY no configurada' });
   }
 
   try {
@@ -993,39 +1130,29 @@ INSTRUCCIONES ADICIONALES DEL USUARIO:
 ═══════════════════════════════════════════════════
 ${refinementPrompt}`;
 
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      temperature: 0.1,
-      max_tokens: 4096,
+    const raw = await callAI({
+      provider, apiKey, model, ollamaUrl,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user',   content: combinedText },
       ],
     });
 
-    const raw = completion.choices[0]?.message?.content?.trim();
-    if (!raw) throw new Error('Respuesta vacía de Groq');
+    console.log(`[confluence-refine] Provider: ${provider}, Model: ${model}, Response length: ${raw.length} chars`);
 
-    const extractBalancedJson = (str) => {
-      const start = str.indexOf('{');
-      if (start === -1) return null;
-      let depth = 0, inString = false, escape = false;
-      for (let i = start; i < str.length; i++) {
-        const ch = str[i];
-        if (escape)          { escape = false; continue; }
-        if (ch === '\\')     { escape = true;  continue; }
-        if (ch === '"')      { inString = !inString; continue; }
-        if (inString)        continue;
-        if (ch === '{')      depth++;
-        else if (ch === '}') { depth--; if (depth === 0) return str.slice(start, i + 1); }
-      }
-      return null;
-    };
+    const jsonStr = extractJsonFromAI(raw, 'confluence-refine');
+    if (!jsonStr) {
+      console.error('[confluence-refine] AI raw response:', raw.substring(0, 500));
+      throw new Error(`El modelo ${model} no devolvió JSON válido`);
+    }
 
-    const jsonStr = extractBalancedJson(raw);
-    if (!jsonStr) throw new Error('La IA no devolvió JSON válido');
-
-    const parsed = JSON.parse(jsonStr);
+    let parsed;
+    try {
+      parsed = cleanJSON(jsonStr);
+    } catch (parseErr) {
+      console.error('[confluence-refine] JSON parse error:', parseErr.message);
+      throw parseErr;
+    }
     postProcess(parsed, combinedText);
 
     if (!Array.isArray(parsed.scenarios)) {
@@ -1041,7 +1168,7 @@ ${refinementPrompt}`;
 
     return res.json({ success: true, ...parsed });
   } catch (err) {
-    console.error('Error confluence-refine:', err.message);
+    console.error('[confluence-refine] Error:', err.message);
     return res.status(500).json({ success: false, error: `Error al refinar: ${err.message}` });
   }
 });

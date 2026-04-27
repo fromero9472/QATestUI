@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Play, RefreshCw, FileCode, ChevronRight, Terminal,
   CheckCircle, XCircle, Loader, Wifi, WifiOff, BarChart2,
@@ -11,6 +11,7 @@ import KarateEditor from './KarateEditor';
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:3001';
 
 const ENV_STORAGE_KEY = 'qatestui_runner_envs';
+const RUNNER_PROPS_STORAGE_KEY = 'qatestui_runner_properties_v1';
 const DEFAULT_ENVS = [
   { id: 'desa', label: 'desa', baseUrl: 'https://credit-profile-claropay-ar-desa.apps.osen02.claro.amx' },
   { id: 'prod', label: 'prod', baseUrl: 'https://credit-profile-claropay-ar-prod.apps.osen02.claro.amx' },
@@ -25,6 +26,20 @@ function loadEnvs() {
 }
 function saveEnvs(envs) {
   localStorage.setItem(ENV_STORAGE_KEY, JSON.stringify(envs));
+}
+
+function loadRunnerProperties() {
+  try {
+    const saved = localStorage.getItem(RUNNER_PROPS_STORAGE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return {
+        global: typeof parsed.global === 'string' ? parsed.global : '{}',
+        perFeature: parsed.perFeature && typeof parsed.perFeature === 'object' ? parsed.perFeature : {},
+      };
+    }
+  } catch {}
+  return { global: '{}', perFeature: {} };
 }
 
 // â”€â”€â”€ AI Provider mini-selector â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -400,13 +415,57 @@ export default function FeatureRunner() {
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [showCreate,  setShowCreate]  = useState(false);
   const [toastMsg,    setToastMsg]    = useState('');
+  const [showProps,   setShowProps]   = useState(false);
+  const [runnerProps, setRunnerProps] = useState(() => loadRunnerProperties());
   const logsEndRef   = useRef(null);
   const importRef    = useRef(null);
 
   useEffect(() => { checkAgent(); }, []); // eslint-disable-line
   useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [logs]);
 
+  // Load from Confluence Import if available
+  useEffect(() => {
+    const confluenceData = localStorage.getItem('qatestui_confluence_import');
+    if (confluenceData && agentStatus === 'ok') {
+      try {
+        const form = JSON.parse(confluenceData);
+        const featureContent = generateKarateFeature(form);
+        const featureName = `${form.featureName || 'Feature'}-${Date.now()}.feature`;
+
+        api('POST', '/runner/features/create', { path: featureName })
+          .then(() => api('POST', '/runner/features/save', { path: featureName, content: featureContent }))
+          .then(() => {
+            localStorage.removeItem('qatestui_confluence_import');
+            fetchFeatures();
+            toast('✅ Feature desde Confluence cargado al Runner');
+          })
+          .catch(err => console.warn('Error loading confluence import:', err));
+      } catch (err) {
+        console.warn('Error parsing confluence import:', err);
+      }
+    }
+  }, [agentStatus]);
+
   const toast = (msg) => { setToastMsg(msg); setTimeout(() => setToastMsg(''), 3000); };
+
+  const parsePropsJson = (text, label) => {
+    const raw = (text || '').trim();
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error(`${label} debe ser un JSON objeto`);
+      }
+      return parsed;
+    } catch (err) {
+      throw new Error(`${label} inválido: ${err.message}`);
+    }
+  };
+
+  const persistRunnerProps = (next) => {
+    setRunnerProps(next);
+    localStorage.setItem(RUNNER_PROPS_STORAGE_KEY, JSON.stringify(next));
+  };
 
   const handleSaveEnvs = (newEnvs) => {
     saveEnvs(newEnvs);
@@ -447,6 +506,18 @@ export default function FeatureRunner() {
     setSelected(feature); setRunResult(null); setLogs([]); setFileContent('');
     try { const d = await api('GET', `/runner/features/content?path=${encodeURIComponent(feature.relativePath)}`); setFileContent(d.content || ''); }
     catch { setFileContent('// Error al cargar el archivo'); }
+  };
+
+  const updateGlobalProps = (value) => {
+    persistRunnerProps({ ...runnerProps, global: value });
+  };
+
+  const updateSelectedFeatureProps = (value) => {
+    if (!selected?.relativePath) return;
+    persistRunnerProps({
+      ...runnerProps,
+      perFeature: { ...runnerProps.perFeature, [selected.relativePath]: value },
+    });
   };
 
   // â”€â”€ GestiÃ³n de archivos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -511,12 +582,18 @@ export default function FeatureRunner() {
   const runFeature = async (featurePath) => {
     setLogs([]); setRunResult(null); setRunning(true);
     try {
+      const globalProps = parsePropsJson(runnerProps.global, 'Properties globales');
+      const selectedFeaturePropsRaw = featurePath ? (runnerProps.perFeature?.[featurePath] || '{}') : '{}';
+      const selectedFeatureProps = parsePropsJson(selectedFeaturePropsRaw, 'Properties del feature');
+      const mergedProperties = { ...globalProps, ...selectedFeatureProps };
+
       const res = await fetch(`${BACKEND_URL}/runner/run`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           featurePath: featurePath || null,
           env,
           baseUrl: envs.find(e => e.id === env)?.baseUrl || '',
+          properties: mergedProperties,
         }),
       });
       const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
@@ -583,6 +660,10 @@ export default function FeatureRunner() {
               className="p-1.5 rounded-lg hover:bg-white/5 text-slate-500 hover:text-violet-400 transition-all">
               <Settings size={13}/>
             </button>
+            <button onClick={() => setShowProps(v => !v)} title="Configurar properties"
+              className={`p-1.5 rounded-lg transition-all ${showProps ? 'bg-violet-500/10 text-violet-300' : 'hover:bg-white/5 text-slate-500 hover:text-violet-400'}`}>
+              <Terminal size={13}/>
+            </button>
           </div>
           {/* Base URL del ambiente seleccionado */}
           {envs.find(e => e.id === env)?.baseUrl && (
@@ -592,6 +673,38 @@ export default function FeatureRunner() {
           )}
         </div>
       </div>
+
+      {showProps && (
+        <div className="card">
+          <div className="flex items-center justify-between mb-3">
+            <p className="card__title mb-0"><Terminal size={13}/> Properties de ejecucion</p>
+            <p className="text-[10px] text-slate-500 font-mono">se envian como -Dkey=value</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <p className="text-[11px] font-semibold text-slate-300 mb-1">Globales (todos los tests)</p>
+              <textarea
+                className="w-full min-h-[120px] bg-black/30 border border-white/10 rounded-xl p-2 font-mono text-xs text-slate-200 outline-none focus:border-violet-500"
+                value={runnerProps.global}
+                onChange={(e) => updateGlobalProps(e.target.value)}
+                placeholder={'{\n  "KIBANA_USER": "usuario",\n  "KIBANA_PASS": "secreto"\n}'}
+              />
+            </div>
+            <div>
+              <p className="text-[11px] font-semibold text-slate-300 mb-1">
+                Override por feature {selected ? <span className="text-slate-500 font-mono">({selected.name})</span> : ''}
+              </p>
+              <textarea
+                disabled={!selected}
+                className="w-full min-h-[120px] bg-black/30 border border-white/10 rounded-xl p-2 font-mono text-xs text-slate-200 outline-none focus:border-violet-500 disabled:opacity-40"
+                value={selected ? (runnerProps.perFeature?.[selected.relativePath] || '{}') : '{}'}
+                onChange={(e) => updateSelectedFeatureProps(e.target.value)}
+                placeholder={'{\n  "db.url": "jdbc:oracle:thin:@...",\n  "db.user": "usuario",\n  "db.password": "clave"\n}'}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {agentStatus === 'down' && (
         <div className="flex items-start gap-3 p-4 rounded-2xl bg-red-500/10 border border-red-500/30 text-red-300">

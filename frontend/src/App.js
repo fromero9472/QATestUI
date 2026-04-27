@@ -40,20 +40,42 @@ const initialForm = { featureName: '', endpoint: '', baseUrl: '', enableOcp: fal
 
 // ── GitHub session widget (navbar) ────────────────────────────────
 function GitHubSessionWidget() {
-  const { githubUser, isGitHubLoggedIn, loginWithGitHub, logout, currentProvider, copilotStatus } = useAuth();
+  const { githubUser, isGitHubLoggedIn, loginWithGitHub, logout, currentProvider, copilotStatus, authError } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [showLogoutTip, setShowLogoutTip] = useState(false);
+
+  const handleLogout = async () => {
+    await logout();
+    setMenuOpen(false);
+    setShowLogoutTip(true);
+    // Ocultar el tip después de 10 segundos
+    setTimeout(() => setShowLogoutTip(false), 10000);
+  };
 
   if (!isGitHubLoggedIn) {
     return (
-      <button
-        type="button"
-        onClick={() => loginWithGitHub('copilot')}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-xs font-semibold transition-all"
-        title="Iniciar sesión con GitHub para usar Copilot / GitHub Models"
-      >
-        <GitBranch size={13} />
-        <span className="hidden sm:inline">Conectar GitHub</span>
-      </button>
+      <div className="flex flex-col items-end gap-1">
+        <button
+          type="button"
+          onClick={() => loginWithGitHub('copilot')}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-xs font-semibold transition-all"
+          title="Iniciar sesión con GitHub para usar Copilot / GitHub Models"
+        >
+          <GitBranch size={13} />
+          <span className="hidden sm:inline">Conectar GitHub</span>
+        </button>
+        {authError && (
+          <span className="text-[10px] text-red-400 max-w-64 truncate" title={authError}>
+            Error OAuth: {authError}
+          </span>
+        )}
+        {showLogoutTip && (
+          <div className="absolute top-full right-0 mt-2 w-72 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[11px] shadow-lg z-50">
+            <p className="font-semibold mb-1">✓ Sesión cerrada en QATestUI</p>
+            <p className="text-amber-300/80">Para cambiar de cuenta, cerrá sesión también en <strong>github.com</strong> antes de reconectar.</p>
+          </div>
+        )}
+      </div>
     );
   }
 
@@ -89,7 +111,15 @@ function GitHubSessionWidget() {
             </div>
             <button
               type="button"
-              onClick={() => { logout(); setMenuOpen(false); }}
+              onClick={() => { loginWithGitHub(currentProvider?.id, { forceLogin: true }); setMenuOpen(false); }}
+              className="w-full flex items-center gap-2 px-4 py-3 text-xs text-slate-300 hover:bg-white/5 transition-colors"
+              title="Forzar reautenticación con GitHub"
+            >
+              <LogIn size={13} /> Cambiar cuenta de GitHub
+            </button>
+            <button
+              type="button"
+              onClick={handleLogout}
               className="w-full flex items-center gap-2 px-4 py-3 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
             >
               <LogOut size={13} /> Cerrar sesión de GitHub
@@ -199,7 +229,8 @@ function AppInner() {
         };
       });
       if (newScenarios.length === 0) return prev;
-      return {
+
+      const updatedForm = {
         featureName: parsed.featureName || prev.featureName,
         endpoint:    parsed.endpoint    || prev.endpoint,
         baseUrl:     parsed.baseUrl     || prev.baseUrl     || '',
@@ -208,6 +239,14 @@ function AppInner() {
         namespace:   parsed.namespace   || prev.namespace   || '',
         scenarios:   prev.scenarios.length === 0 ? newScenarios : [...prev.scenarios, ...newScenarios],
       };
+
+      // Si viene de Confluence Import, guarda en localStorage y cambia a runner
+      if (parsed.featureName && !output) {
+        localStorage.setItem('qatestui_confluence_import', JSON.stringify(updatedForm));
+        setTimeout(() => setActiveTab('runner'), 300);
+      }
+
+      return updatedForm;
     });
   };
 

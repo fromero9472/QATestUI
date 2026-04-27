@@ -104,7 +104,7 @@ export default function AIProviderPanel({ defaultOpen = false }) {
                   <p className="text-xs text-slate-500 text-center">El token no se almacena en el servidor</p>
                 </div>
               ) : (
-                <div className="space-y-3">
+                  <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       {githubUser?.avatar && (
@@ -115,13 +115,40 @@ export default function AIProviderPanel({ defaultOpen = false }) {
                         <p className="text-xs text-slate-500">@{githubUser?.login} · Sesión activa</p>
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={logout}
-                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500 text-xs hover:bg-red-500/20 transition-colors"
-                    >
-                      <LogOut size={11} /> Cerrar sesión
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => loginWithGitHub(providerId, { forceLogin: true })}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 border border-white/15 text-slate-300 text-xs hover:bg-white/10 transition-colors"
+                        title="Forzar reautenticación con GitHub (se borrará la sesión local)"
+                      >
+                        <GitBranch size={11} /> Cambiar cuenta
+                      </button>
+                      <button
+                        type="button"
+                        onClick={logout}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500 text-xs hover:bg-red-500/20 transition-colors"
+                      >
+                        <LogOut size={11} /> Cerrar sesión
+                      </button>
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-slate-500 bg-white/5 p-2 rounded border border-white/10 space-y-1">
+                    <p className="font-semibold text-slate-400">💡 Para cambiar de cuenta de GitHub:</p>
+                    <ol className="list-decimal list-inside space-y-0.5 ml-1">
+                      <li>Hacé click en <strong>"Cambiar cuenta"</strong> arriba</li>
+                      <li>Si sigue conectando automáticamente, <strong>cerrá sesión en github.com</strong> primero</li>
+                      <li>O revocá el acceso desde{' '}
+                        <a
+                          href="https://github.com/settings/applications"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-violet-400 hover:underline"
+                        >
+                          GitHub Settings
+                        </a>
+                      </li>
+                    </ol>
                   </div>
 
                   {providerId === 'copilot' && (
