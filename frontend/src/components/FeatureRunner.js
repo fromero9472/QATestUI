@@ -7,11 +7,16 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../AuthContext';
 import KarateEditor from './KarateEditor';
+import ReportingPanel from './ReportingPanel';
+import { Spinner, LoadingState } from './index';
+import { exportReportAsJSON, exportReportAsHTML } from '../utils/reportUtils';
+import { normalizeReport } from '../utils/reportHelpers';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:3001';
 
 const ENV_STORAGE_KEY = 'qatestui_runner_envs';
 const RUNNER_PROPS_STORAGE_KEY = 'qatestui_runner_properties_v1';
+const REPORTS_STORAGE_KEY = 'qatestui_runner_reports_v1';
 const DEFAULT_ENVS = [
   { id: 'desa', label: 'desa', baseUrl: 'https://credit-profile-claropay-ar-desa.apps.osen02.claro.amx' },
   { id: 'prod', label: 'prod', baseUrl: 'https://credit-profile-claropay-ar-prod.apps.osen02.claro.amx' },
@@ -58,6 +63,270 @@ function loadRunnerProperties() {
     }
   } catch {}
   return { global: '{}', perFeature: {} };
+}
+
+// Report storage functions - now per feature
+function loadReports() {
+  try {
+    const saved = localStorage.getItem(REPORTS_STORAGE_KEY);
+    return saved ? JSON.parse(saved) : {};
+  } catch {}
+  return {};
+}
+
+function saveReports(reports) {
+  try {
+    localStorage.setItem(REPORTS_STORAGE_KEY, JSON.stringify(reports));
+  } catch {}
+}
+
+function getReportForFeature(reports, featurePath) {
+  if (!featurePath || !reports) return null;
+  return reports[featurePath] || null;
+}
+
+function saveReportForFeature(reports, featurePath, report) {
+  const updated = { ...reports };
+  if (featurePath) {
+    updated[featurePath] = report;
+  }
+  saveReports(updated);
+  return updated;
+}
+
+function generateExecutionReport(runResult, featureName, env, baseUrl, logs) {
+  const now = new Date();
+  const backendReport = runResult?.summary && Array.isArray(runResult.summary?.scenarios)
+    ? runResult.summary
+    : null;
+
+  if (backendReport) {
+    return {
+      executionId: backendReport.executionId || `exec-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      featureName: backendReport.featureName || (featureName || '').replace('.feature', '') || 'Sin nombre',
+      environment: backendReport.environment || env || 'N/A',
+      baseUrl: backendReport.baseUrl || baseUrl || '',
+      status: backendReport.status || (runResult?.exitCode === 0 ? 'PASSED' : 'FAILED'),
+      startedAt: backendReport.startedAt || now.toISOString(),
+      finishedAt: backendReport.finishedAt || now.toISOString(),
+      durationMs: backendReport.durationMs ?? 0,
+      summary: {
+        total: backendReport.summary?.total ?? 0,
+        passed: backendReport.summary?.passed ?? 0,
+        failed: backendReport.summary?.failed ?? 0,
+        skipped: backendReport.summary?.skipped ?? 0,
+      },
+      scenarios: backendReport.scenarios,
+    };
+  }
+
+  // Extraer estadísticas de los logs como fallback
+  let logStats = { total: 0, passed: 0, failed: 0, skipped: 0, duration: 0 };
+  const allLogText = logs.map(l => l.text || l).join('\n');
+
+  // Maven output: "Tests run: 5, Failures: 1, Skipped: 0, Time elapsed: 0.123 s"
+  const testsRunMatch = allLogText.match(/Tests\s+run:\s*(\d+)/i);
+  const failuresMatch = allLogText.match(/Failures:\s*(\d+)/i);
+  const skippedMatch = allLogText.match(/Skipped:\s*(\d+)/i);
+  const timeMatch = allLogText.match(/Time\s+elapsed:\s*([\d.]+)\s*s/i);
+
+  if (testsRunMatch) {
+    logStats.total = parseInt(testsRunMatch[1]);
+    logStats.failed = failuresMatch ? parseInt(failuresMatch[1]) : 0;
+    logStats.skipped = skippedMatch ? parseInt(skippedMatch[1]) : 0;
+    logStats.passed = logStats.total - logStats.failed - logStats.skipped;
+    if (timeMatch) {
+      logStats.duration = Math.round(parseFloat(timeMatch[1]) * 1000);
+    }
+  }
+
+  // Usar scenarios del runResult si están disponibles, si no, parsear desde logs
+  let scenarios = [];
+  if (runResult?.scenarios && Array.isArray(runResult.scenarios) && runResult.scenarios.length > 0) {
+    scenarios = runResult.scenarios;
+  } else {
+    scenarios = parseScenarios(logs, runResult);
+  }
+
+  // Preparar summary con fallback en orden: backend > logs > scenarios
+  let summary = { total: 0, passed: 0, failed: 0, skipped: 0 };
+
+  if (runResult?.summary && runResult.summary.total > 0) {
+    // Usar summary del backend si es válido
+    summary = {
+      total: runResult.summary.total ?? 0,
+      passed: runResult.summary.passed ?? 0,
+      failed: runResult.summary.failed ?? 0,
+      skipped: runResult.summary.skipped ?? 0,
+      durationMs: runResult.summary.durationMs ?? 0,
+    };
+  } else if (logStats.total > 0) {
+    // Si no, usar lo extraído de los logs de Maven
+    summary = {
+      total: logStats.total,
+      passed: logStats.passed,
+      failed: logStats.failed,
+      skipped: logStats.skipped,
+      durationMs: logStats.duration,
+    };
+  } else if (scenarios.length > 0) {
+    // Si nada funciona, calcular desde scenarios parseados
+    const passed = scenarios.filter(s => s.status?.toUpperCase() === 'PASSED').length;
+    const failed = scenarios.filter(s => s.status?.toUpperCase() === 'FAILED').length;
+    const skipped = scenarios.filter(s => s.status?.toUpperCase() === 'SKIPPED').length;
+    const total = scenarios.length;
+    const totalDuration = scenarios.reduce((sum, s) => sum + (s.durationMs ?? 0), 0);
+
+    summary = {
+      total,
+      passed,
+      failed,
+      skipped,
+      durationMs: totalDuration ?? 0,
+    };
+  }
+
+  // Determinar estado general basado en scenarios o summary
+  const totalScenarios = Math.max(summary.total ?? 0, scenarios.length);
+  const failedScenarios = summary.failed ?? 0;
+  let overallStatus = 'UNKNOWN';
+  if (totalScenarios > 0) {
+    overallStatus = failedScenarios === 0 ? 'PASSED' : 'FAILED';
+  } else if (runResult?.exitCode === 0) {
+    overallStatus = 'PASSED';
+  } else if (runResult?.exitCode === 1) {
+    overallStatus = 'FAILED';
+  }
+
+  return {
+    executionId: `exec-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    featureName: (featureName || '').replace('.feature', '') || 'Sin nombre',
+    environment: env || 'N/A',
+    baseUrl: baseUrl || '',
+    status: overallStatus,
+    startedAt: runResult?.startedAt || now.toISOString(),
+    finishedAt: runResult?.finishedAt || now.toISOString(),
+    durationMs: summary.durationMs ?? runResult?.summary?.durationMs ?? runResult?.durationMs ?? 0,
+    summary: {
+      total: Math.max(summary.total ?? 0, scenarios.length),
+      passed: summary.passed ?? 0,
+      failed: summary.failed ?? 0,
+      skipped: summary.skipped ?? 0,
+    },
+    scenarios: scenarios && scenarios.length > 0 ? scenarios : [],
+  };
+}
+
+function parseScenarios(logs, runResult) {
+  // Si tenemos scenarios en runResult, usarlos (prioridad máxima)
+  if (runResult?.scenarios && Array.isArray(runResult.scenarios) && runResult.scenarios.length > 0) {
+    return runResult.scenarios;
+  }
+
+  // Parsear escenarios desde logs
+  const scenarios = [];
+  let currentScenario = null;
+
+  logs.forEach((log, idx) => {
+    const text = log?.text || log || '';
+
+    // Detectar inicio de Scenario - múltiples patrones para Karate
+    // Buscar líneas que comiencen con "Scenario:" o contengan "Scenario:"
+    const scenarioRegex = /(?:^|\s)Scenario[:\s]+(.+?)(?:\s[\-\|]|$)/i;
+    const scenarioMatch = text.match(scenarioRegex);
+
+    if (scenarioMatch && scenarioMatch[1]) {
+      // Guardar escenario anterior si existe
+      if (currentScenario) {
+        // Finalizarlo si no tiene status claro
+        if (currentScenario.status === 'RUNNING') {
+          currentScenario.status = 'UNKNOWN';
+        }
+        scenarios.push(currentScenario);
+      }
+
+      currentScenario = {
+        name: scenarioMatch[1].trim(),
+        status: 'RUNNING',
+        durationMs: 0,
+        tags: [],
+        request: {},
+        response: { status: 0, headers: {}, body: {} },
+        assertions: [],
+        logs: [text],
+        error: null,
+      };
+      return;
+    }
+
+    // Si hay escenario actual, procesar el log
+    if (currentScenario) {
+      // Agregar log (limitar a 100 líneas por escenario)
+      if (currentScenario.logs.length < 100) {
+        currentScenario.logs.push(text);
+      }
+
+      // Detectar status HTTP (200, 404, 500, etc)
+      const statusMatch = text.match(/\b(\d{3})\b/);
+      if (statusMatch && statusMatch[1]) {
+        currentScenario.response.status = parseInt(statusMatch[1]);
+      }
+
+       // Detectar FAILED primero (tiene prioridad)
+       const failedPatterns = [
+         /✗|✕|❌/,                         // X mark
+         /\[FAIL\]/i,                   // [FAIL]
+         /\bFAIL(?:ED)?\b/i,            // FAIL or FAILED word
+         /does\s+not\s+match/i,         // Karate mismatch
+         /AssertionError/,              // Java assertion
+         /Exception|Error /,            // Generic error
+       ];
+
+       const isFailed = failedPatterns.some(p => text.match(p));
+       if (isFailed) {
+         currentScenario.status = 'FAILED';
+         if (!currentScenario.error) {
+           currentScenario.error = {
+             message: text.substring(0, 500),
+             stack: text,
+           };
+         }
+       } else {
+         // Detectar PASSED - solo si NO ha fallado
+         const passedPatterns = [
+           /✓|✔|✅/,                     // checkmark
+           /\[PASS\]/i,                  // [PASS]
+           /\bPASS(?:ED)?\b/i,           // PASS or PASSED word
+           /All members matched/i,       // Karate match
+           /matched/i,                   // match success
+         ];
+
+         const isPassed = passedPatterns.some(p => text.match(p));
+         if (isPassed && currentScenario.status === 'RUNNING') {
+           currentScenario.status = 'PASSED';
+         }
+       }
+
+      // Detectar duración si está disponible
+      const durationMatch = text.match(/(\d+)\s*ms|(\d+\.\d+)\s*s/i);
+      if (durationMatch) {
+        const value = durationMatch[1] ? parseInt(durationMatch[1]) : parseInt(parseFloat(durationMatch[2]) * 1000);
+        if (!isNaN(value)) {
+          currentScenario.durationMs = value;
+        }
+      }
+    }
+  });
+
+  // Guardar último escenario
+  if (currentScenario) {
+    if (currentScenario.status === 'RUNNING') {
+      currentScenario.status = 'UNKNOWN';
+    }
+    scenarios.push(currentScenario);
+  }
+
+  return scenarios;
 }
 
 function generateKarateFeature(form) {
@@ -219,18 +488,23 @@ function AIAnalysis({ logs, featureName, exitCode, summary }) {
     <div className="card">
       <div className="flex items-center justify-between mb-3">
         <p className="card__title mb-0"><Sparkles size={14} className="text-violet-400" /> Analisis con IA</p>
-        {!analysis
-          ? <button onClick={analyze} disabled={loading}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-violet-600/80 hover:bg-violet-500 disabled:opacity-40 text-white text-xs font-semibold transition-all">
-              {loading ? <><Loader size={12} className="animate-spin" /> Analizando...</> : <><Sparkles size={12} /> {exitCode !== 0 ? 'Diagnosticar error' : 'Analizar resultado'}</>}
-            </button>
-          : <button onClick={analyze} disabled={loading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-slate-200 text-xs transition-all">
-              <RefreshCw size={11} className={loading ? 'animate-spin' : ''} /> Reanalizar
-            </button>}
+         {!analysis
+           ? <button onClick={analyze} disabled={loading}
+               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-violet-600/80 hover:bg-violet-500 disabled:opacity-40 text-white text-xs font-semibold transition-all">
+               {loading ? <><Spinner size="sm" /> Analizando...</> : <><Sparkles size={12} /> {exitCode !== 0 ? 'Diagnosticar error' : 'Analizar resultado'}</>}
+             </button>
+           : <button onClick={analyze} disabled={loading}
+               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-slate-200 text-xs transition-all">
+               <RefreshCw size={11} className={loading ? 'animate-spin' : ''} /> Reanalizar
+             </button>}
       </div>
-      {error && <div className="flex items-center gap-2 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 text-xs"><AlertTriangle size={13}/>{error}</div>}
-      {loading && !analysis && <div className="flex items-center justify-center py-8 text-slate-500 text-xs gap-2"><Loader size={14} className="animate-spin text-violet-400"/>La IA est? analizando el output...</div>}
+       {error && <div className="flex items-center gap-2 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 text-xs"><AlertTriangle size={13}/>{error}</div>}
+       {loading && !analysis && (
+         <div className="flex items-center justify-center py-8 text-slate-500 text-xs gap-2">
+           <Spinner size="sm" color="violet" />
+           La IA está analizando el output...
+         </div>
+       )}
       {analysis && (
         <div className="space-y-3">
           <div className={`flex items-start gap-3 p-3 rounded-xl border text-xs ${analysis.status === 'success' ? 'bg-green-500/10 border-green-500/20 text-green-200' : 'bg-red-500/10 border-red-500/20 text-red-200'}`}>
@@ -396,10 +670,10 @@ function CreateModal({ onClose, onCreate }) {
         {err && <p className="text-xs text-red-400 mb-3">{err}</p>}
         <div className="flex gap-2 justify-end">
           <button onClick={onClose} className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-slate-400 hover:text-slate-200 text-xs font-semibold transition-all">Cancelar</button>
-          <button onClick={submit} disabled={busy}
-            className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white text-xs font-semibold transition-all flex items-center gap-2">
-            {busy ? <Loader size={12} className="animate-spin"/> : <Plus size={12}/>} Crear
-          </button>
+           <button onClick={submit} disabled={busy}
+             className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white text-xs font-semibold transition-all flex items-center gap-2">
+             {busy ? <Spinner size="sm" /> : <Plus size={12}/>} Crear
+           </button>
         </div>
       </div>
     </div>
@@ -529,12 +803,14 @@ export default function FeatureRunner() {
    const [lastReport,  setLastReport]  = useState(null);
    const [aiPanelOpen, setAiPanelOpen] = useState(false);
    const [showCreate,  setShowCreate]  = useState(false);
-   const [toastMsg,    setToastMsg]    = useState('');
-   const logsEndRef   = useRef(null);
-   const importRef    = useRef(null);
+    const [toastMsg,    setToastMsg]    = useState('');
+    const [reports, setReports] = useState(() => loadReports());
+    const logsEndRef   = useRef(null);
+    const importRef    = useRef(null);
 
-  useEffect(() => { checkAgent(); }, []); // eslint-disable-line
-  useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [logs]);
+    useEffect(() => { checkAgent(); }, []); // eslint-disable-line
+    useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [logs]);
+
 
   // Load from Confluence Import if available
   useEffect(() => {
@@ -628,11 +904,17 @@ export default function FeatureRunner() {
     try { const d = await api('GET', '/runner/report'); if (d.success) setLastReport(d.summary); } catch {}
   };
 
-   const selectFeature = async (feature) => {
-     setSelected(feature); setRunResult(null); setLogs([]); setFileContent('');
-     try { const d = await api('GET', `/runner/features/content?path=${encodeURIComponent(feature.relativePath)}`); setFileContent(d.content || ''); }
-     catch { setFileContent('// Error al cargar el archivo'); }
-   };
+    const selectFeature = async (feature) => {
+      setSelected(feature);
+      setRunResult(null);
+      setLogs([]);
+      setFileContent('');
+      try {
+        const d = await api('GET', `/runner/features/content?path=${encodeURIComponent(feature.relativePath)}`);
+        setFileContent(d.content || '');
+      }
+      catch { setFileContent('// Error al cargar el archivo'); }
+    };
 
    const handleRename = async (feature, newName) => {
     const d = await api('POST', '/runner/features/rename', { oldPath: feature.relativePath, newName });
@@ -692,44 +974,112 @@ export default function FeatureRunner() {
     e.target.value = '';
   };
 
-  const runFeature = async (featurePath) => {
-    setLogs([]); setRunResult(null); setRunning(true);
-    try {
-      const globalProps = parsePropsJson(runnerProps.global, 'Properties globales');
-      const selectedFeaturePropsRaw = featurePath ? (runnerProps.perFeature?.[featurePath] || '{}') : '{}';
-      const selectedFeatureProps = parsePropsJson(selectedFeaturePropsRaw, 'Properties del feature');
-      const mergedProperties = { ...globalProps, ...selectedFeatureProps };
+    const runFeature = async (featurePath) => {
+      setLogs([]); setRunResult(null); setRunning(true);
+      let tempLogs = [];
 
-      const res = await fetch(`${BACKEND_URL}/runner/run`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          featurePath: featurePath || null,
-          env,
-          baseUrl: envs.find(e => e.id === env)?.baseUrl || '',
-          properties: mergedProperties,
-        }),
-      });
-      const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
-      while (true) {
-        const { done, value } = await reader.read(); if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n'); buffer = lines.pop();
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          try {
-            const { type, data } = JSON.parse(line.slice(6));
-            if (type === 'done') { setRunResult(data); if (data.summary) setLastReport(data.summary); }
-            else setLogs(prev => [...prev, { type, text: typeof data === 'string' ? data : JSON.stringify(data) }]);
-          } catch {}
+      // Log de inicio
+      console.log(`[RUNNER] Iniciando ejecución de feature: ${featurePath || 'ALL'}`);
+      console.log(`[RUNNER] Selected: ${selected?.relativePath}`);
+
+      try {
+        const globalProps = parsePropsJson(runnerProps.global, 'Properties globales');
+        const selectedFeaturePropsRaw = featurePath ? (runnerProps.perFeature?.[featurePath] || '{}') : '{}';
+        const selectedFeatureProps = parsePropsJson(selectedFeaturePropsRaw, 'Properties del feature');
+        const mergedProperties = { ...globalProps, ...selectedFeatureProps };
+
+        const res = await fetch(`${BACKEND_URL}/runner/run`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            featurePath: featurePath || null,
+            env,
+            baseUrl: envs.find(e => e.id === env)?.baseUrl || '',
+            properties: mergedProperties,
+          }),
+        });
+        const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read(); if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n'); buffer = lines.pop();
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const { type, data } = JSON.parse(line.slice(6));
+              if (type === 'done') {
+                console.log(`[RUNNER] Ejecución completada. Exit code: ${data.exitCode}`);
+                setRunResult(data);
+                if (data.summary) setLastReport(data.summary);
+
+
+                // Generar reporte estructurado con los logs capturados
+                const report = generateExecutionReport(
+                  data,
+                  selected?.name || 'Tests',
+                  env,
+                  envs.find(e => e.id === env)?.baseUrl || '',
+                  tempLogs
+                );
+
+                // Determinar qué path usar para guardar el reporte
+                const reportPath = featurePath || selected?.relativePath;
+
+                console.log(`[RUNNER] Guardando reporte con path: ${reportPath}`);
+                console.log(`[RUNNER] Report total: ${report.summary.total}, passed: ${report.summary.passed}, failed: ${report.summary.failed}`);
+
+                if (reportPath) {
+                  // Guardar reporte con el path correcto
+                  const updatedReports = saveReportForFeature(reports, reportPath, report);
+                  console.log(`[RUNNER] Reports actualizado:`, updatedReports);
+                  setReports(updatedReports);
+                } else {
+                  console.warn('⚠️ No se pudo guardar el reporte: featurePath y selected.relativePath están vacíos');
+                }
+              }
+              else {
+                const newLog = { type, text: typeof data === 'string' ? data : JSON.stringify(data) };
+                tempLogs.push(newLog);
+                setLogs(prev => [...prev, newLog]);
+              }
+            } catch (e) {
+              console.error('Error parseando mensaje SSE:', e);
+            }
+          }
         }
+      } catch (err) {
+        const errorLog = { type: 'error', text: err.message };
+        tempLogs.push(errorLog);
+        setLogs(prev => [...prev, errorLog]);
+        setRunResult({ success: false, exitCode: 1, message: 'Error de conexion' });
+      } finally { setRunning(false); }
+    };
+
+    const handleExportReport = (report, format = 'json') => {
+     try {
+       if (format === 'json') {
+         exportReportAsJSON(report);
+       } else if (format === 'html') {
+         exportReportAsHTML(report);
+       }
+       toast(`✅ Reporte descargado en ${format.toUpperCase()}`);
+     } catch (err) {
+       toast(`Error al descargar: ${err.message}`);
+     }
+   };
+
+    const handleClearReport = () => {
+      if (selected?.relativePath) {
+        const updatedReports = { ...reports };
+        delete updatedReports[selected.relativePath];
+        setReports(updatedReports);
+        saveReports(updatedReports);
       }
-    } catch (err) {
-      setLogs(prev => [...prev, { type: 'error', text: err.message }]);
-      setRunResult({ success: false, exitCode: 1, message: 'Error de conexion' });
-    } finally { setRunning(false); }
-  };
+      setRunResult(null);
+      setLogs([]);
+      toast('🗑 Reporte limpiado');
+    };
 
   return (
     <div className="space-y-4">
@@ -747,11 +1097,11 @@ export default function FeatureRunner() {
       <RunnerAIPanel open={aiPanelOpen} setOpen={setAiPanelOpen} />
 
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          {agentStatus === 'checking' && <Loader size={12} className="animate-spin text-slate-400"/>}
-          {agentStatus === 'ok'       && <Wifi size={12} className="text-green-400"/>}
-          {agentStatus === 'down'     && <WifiOff size={12} className="text-red-400"/>}
+       <div className="flex items-center justify-between">
+         <div className="flex items-center gap-2">
+           {agentStatus === 'checking' && <Spinner size="sm" color="amber" />}
+           {agentStatus === 'ok'       && <Wifi size={12} className="text-green-400"/>}
+           {agentStatus === 'down'     && <WifiOff size={12} className="text-red-400"/>}
           <span className={`text-[11px] font-semibold ${agentStatus === 'ok' ? 'text-green-400' : agentStatus === 'down' ? 'text-red-400' : 'text-slate-400'}`}>
             {agentStatus === 'ok' ? 'Agente activo' : agentStatus === 'down' ? 'Agente ca?do' : 'Verificando...'}
           </span>
@@ -841,10 +1191,11 @@ export default function FeatureRunner() {
 
               {/* Correr todos */}
               <div className="mt-4 pt-3 border-t border-white/5">
-                <button onClick={() => runFeature(null)} disabled={running}
-                  className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-violet-600/80 hover:bg-violet-500 disabled:opacity-40 text-white text-xs font-semibold transition-all">
-                  {running ? <Loader size={12} className="animate-spin"/> : <Play size={12}/>} Correr todos
-                </button>
+                       <button onClick={() => runFeature(null)} disabled={running}
+                   className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-violet-600/80 hover:bg-violet-500 disabled:opacity-40 text-white text-xs font-semibold transition-all">
+                   {running ? <Spinner size="sm" color="violet" /> : <Play size={12}/>}
+                   Correr todos
+                 </button>
               </div>
             </div>
           </div>
@@ -864,10 +1215,10 @@ export default function FeatureRunner() {
                         className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-slate-400 hover:text-blue-400 text-xs font-semibold transition-all">
                         <Download size={12}/> Exportar
                       </button>
-                      <button onClick={() => runFeature(selected.relativePath)} disabled={running}
-                        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-green-600/80 hover:bg-green-500 disabled:opacity-40 text-white text-xs font-semibold transition-all">
-                        {running ? <Loader size={13} className="animate-spin"/> : <Play size={13}/>} Ejecutar ({env})
-                      </button>
+                       <button onClick={() => runFeature(selected.relativePath)} disabled={running}
+                         className="flex items-center gap-2 px-4 py-2 rounded-xl bg-green-600/80 hover:bg-green-500 disabled:opacity-40 text-white text-xs font-semibold transition-all">
+                         {running ? <Spinner size="sm" /> : <Play size={13}/>} Ejecutar ({env})
+                       </button>
                     </div>
                   </div>
                 </div>
@@ -887,34 +1238,56 @@ export default function FeatureRunner() {
               </div>
             )}
 
-            {/* Output */}
-            {(logs.length > 0 || running || runResult) && (
-              <div className="card">
-                <p className="card__title mb-3"><Terminal size={13}/> Output</p>
-                {runResult && (
-                  <div className={`flex items-center gap-2 px-3 py-2 rounded-xl mb-3 text-xs font-semibold ${runResult.success ? 'bg-green-500/10 border border-green-500/20 text-green-300' : 'bg-red-500/10 border border-red-500/20 text-red-300'}`}>
-                    {runResult.success ? <CheckCircle size={14}/> : <XCircle size={14}/>} {runResult.message}
-                  </div>
-                )}
-                <div className="bg-black/50 rounded-xl p-3 font-mono text-xs overflow-auto" style={{maxHeight:'300px'}}>
-                  {logs.map((log,i) => (
-                    <div key={i} className={`leading-relaxed whitespace-pre-wrap break-all ${log.type==='error'?'text-red-400':log.type==='success'?'text-green-400':log.type==='info'?'text-violet-300':'text-slate-300'}`}>
-                      {log.text}
-                    </div>
-                  ))}
-                  {running && <div className="flex items-center gap-2 text-slate-500 mt-2"><Loader size={11} className="animate-spin"/> Ejecutando Maven...</div>}
-                  <div ref={logsEndRef}/>
-                </div>
-              </div>
-            )}
+             {/* Output - Mostrar reporte, logs y análisis */}
+             {selected && (
+               <>
+                 {(() => {
+                   const report = getReportForFeature(reports, selected.relativePath);
+                   if (report) {
+                     console.log('[UI] Renderizando reporte para:', selected.relativePath);
+                     return (
+                       <div className="space-y-4">
+                         <ReportingPanel
+                           runResult={report}
+                           env={env}
+                           feature={selected}
+                           selected={selected}
+                           onExport={handleExportReport}
+                         />
+                         <button
+                           onClick={handleClearReport}
+                           className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-red-400 text-xs font-semibold transition-all"
+                         >
+                           🗑 Limpiar reporte
+                         </button>
+                       </div>
+                     );
+                   }
+                   return null;
+                 })()}
 
-            {/* Análisis IA */}
-            {runResult && logs.length > 0 && (
-              <AIAnalysis logs={logs} featureName={selected?.name} exitCode={runResult.exitCode} summary={runResult.summary}/>
-            )}
+                 {/* Logs cuando hay contenido o está ejecutando */}
+                 {(logs.length > 0 || running) && (
+                   <div className="card">
+                     <p className="card__title mb-3"><Terminal size={13}/> Output en vivo</p>
+                     <div className="bg-black/50 rounded-xl p-3 font-mono text-xs overflow-auto" style={{maxHeight:'300px'}}>
+                       {logs.map((log,i) => (
+                         <div key={i} className={`leading-relaxed whitespace-pre-wrap break-all ${log.type==='error'?'text-red-400':log.type==='success'?'text-green-400':log.type==='info'?'text-violet-300':'text-slate-300'}`}>
+                           {log.text}
+                         </div>
+                       ))}
+                       {running && <div className="flex items-center gap-2 text-slate-500 mt-2"><Loader size={11} className="animate-spin"/> Ejecutando Maven...</div>}
+                       <div ref={logsEndRef}/>
+                     </div>
+                   </div>
+                 )}
 
-            {/* Reporte */}
-            {!running && logs.length === 0 && <ReportSummary summary={lastReport}/>}
+                 {/* IA Analysis */}
+                 {runResult && logs.length > 0 && (
+                   <AIAnalysis logs={logs} featureName={selected?.name} exitCode={runResult.exitCode} summary={runResult.summary}/>
+                 )}
+               </>
+             )}
           </div>
         </div>
       )}

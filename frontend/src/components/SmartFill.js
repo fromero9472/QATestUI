@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import axios from 'axios';
 import { Sparkles, ChevronDown, ChevronUp, CheckCircle2, X, Cpu, GitBranch, Lock } from 'lucide-react';
 import { useAuth } from '../AuthContext';
+import { ActionButton, Spinner } from './index';
 import './SmartFill.css';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:3001';
@@ -111,12 +112,16 @@ export default function SmartFill({ onApply }) {
         <div className="border-t border-[#1e293b] px-5 py-4 flex items-center gap-3 bg-amber-500/5">
           <Lock size={14} className="text-amber-400 shrink-0" />
           <p className="text-xs text-amber-300">{notReadyReason}</p>
-          {['github', 'copilot'].includes(providerId) && !isGitHubLoggedIn && (
-            <button type="button" onClick={() => loginWithGitHub(providerId)}
-              className="ml-auto shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#238636] hover:bg-[#2ea043] text-white text-xs font-semibold transition-colors">
-              <GitBranch size={12} /> Conectar GitHub
-            </button>
-          )}
+           {['github', 'copilot'].includes(providerId) && !isGitHubLoggedIn && (
+             <ActionButton
+               icon={GitBranch}
+               label="Conectar GitHub"
+               onClick={() => loginWithGitHub(providerId)}
+               variant="success"
+               size="md"
+               className="ml-auto shrink-0"
+             />
+           )}
         </div>
       )}
 
@@ -140,19 +145,32 @@ export default function SmartFill({ onApply }) {
             rows={8} spellCheck={false}
           />
 
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className="btn btn--primary" onClick={handleParse} disabled={!canAnalyze}>
-              {loading ? <><span className="spinner" />Analizando...</> : <><Sparkles size={14} />Analizar criterios</>}
-            </button>
-            {result && (
-              <button type="button" className="btn btn--success" onClick={handleApply}>
-                <CheckCircle2 size={14} /> Aplicar {scenarios.length > 1 ? `${scenarios.length} escenarios` : 'al formulario'}
-              </button>
-            )}
-            <button type="button" className="btn btn--ghost" onClick={handleClose}>
-              <X size={14} /> Cancelar
-            </button>
-          </div>
+           <div className="flex flex-wrap gap-2">
+             <ActionButton
+               icon={loading ? undefined : Sparkles}
+               label={loading ? "Analizando..." : "Analizar criterios"}
+               onClick={handleParse}
+               variant="default"
+               size="md"
+               disabled={!canAnalyze}
+             />
+             {result && (
+               <ActionButton
+                 icon={CheckCircle2}
+                 label={`Aplicar ${scenarios.length > 1 ? `${scenarios.length} escenarios` : 'al formulario'}`}
+                 onClick={handleApply}
+                 variant="success"
+                 size="md"
+                />
+              )}
+              <ActionButton
+                icon={X}
+                label="Cancelar"
+                onClick={handleClose}
+                variant="ghost"
+                size="md"
+              />
+           </div>
 
           {error && (
             <div className="flex items-center gap-2 text-xs text-red-400 p-3 rounded-xl bg-red-500/5 border border-red-500/20">

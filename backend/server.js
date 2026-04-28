@@ -1448,6 +1448,67 @@ app.get('/runner/report', async (req, res) => {
   }
 });
 
+app.get('/api/reports/latest', async (req, res) => {
+  try {
+    const { data } = await axios.get(`${RUNNER_AGENT_URL}/reports/latest`, { headers: agentHeaders(), timeout: 5000 });
+    res.json(data);
+  } catch (err) {
+    res.status(err?.response?.status || 500).json({ success: false, error: err?.response?.data?.error || err.message });
+  }
+});
+
+app.get('/api/reports/:executionId', async (req, res) => {
+  try {
+    const { data } = await axios.get(`${RUNNER_AGENT_URL}/reports/${encodeURIComponent(req.params.executionId)}`, { headers: agentHeaders(), timeout: 5000 });
+    res.json(data);
+  } catch (err) {
+    res.status(err?.response?.status || 500).json({ success: false, error: err?.response?.data?.error || err.message });
+  }
+});
+
+app.get('/api/reports/:executionId/scenarios/:scenarioId', async (req, res) => {
+  try {
+    const { executionId, scenarioId } = req.params;
+    const { data } = await axios.get(
+      `${RUNNER_AGENT_URL}/reports/${encodeURIComponent(executionId)}/scenarios/${encodeURIComponent(scenarioId)}`,
+      { headers: agentHeaders(), timeout: 5000 }
+    );
+    res.json(data);
+  } catch (err) {
+    res.status(err?.response?.status || 500).json({ success: false, error: err?.response?.data?.error || err.message });
+  }
+});
+
+app.get('/api/reports/:executionId/download/json', async (req, res) => {
+  try {
+    const { executionId } = req.params;
+    const response = await axios.get(
+      `${RUNNER_AGENT_URL}/reports/${encodeURIComponent(executionId)}/download/json`,
+      { headers: agentHeaders(), responseType: 'stream', timeout: 10000 }
+    );
+    res.setHeader('Content-Type', response.headers['content-type'] || 'application/json');
+    res.setHeader('Content-Disposition', response.headers['content-disposition'] || `attachment; filename="report-${executionId}.json"`);
+    response.data.pipe(res);
+  } catch (err) {
+    res.status(err?.response?.status || 500).json({ success: false, error: err?.response?.data?.error || err.message });
+  }
+});
+
+app.get('/api/reports/:executionId/download/html', async (req, res) => {
+  try {
+    const { executionId } = req.params;
+    const response = await axios.get(
+      `${RUNNER_AGENT_URL}/reports/${encodeURIComponent(executionId)}/download/html`,
+      { headers: agentHeaders(), responseType: 'stream', timeout: 10000 }
+    );
+    res.setHeader('Content-Type', response.headers['content-type'] || 'text/html; charset=utf-8');
+    res.setHeader('Content-Disposition', response.headers['content-disposition'] || `attachment; filename="report-${executionId}.html"`);
+    response.data.pipe(res);
+  } catch (err) {
+    res.status(err?.response?.status || 500).json({ success: false, error: err?.response?.data?.error || err.message });
+  }
+});
+
 // POST /runner/run — ejecuta Maven, hace pipe del SSE del agente al cliente
 app.post('/runner/run', async (req, res) => {
   res.setHeader('Content-Type',  'text/event-stream');

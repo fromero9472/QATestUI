@@ -4,6 +4,7 @@ import ScenarioItem from './ScenarioItem';
 import SmartFill from './SmartFill';
 import ConfluenceImport from './ConfluenceImport';
 import AIProviderPanel from './AIProviderPanel';
+import { ActionButton, Spinner } from './index';
 import './FeatureForm.css';
 
 export default function FeatureForm({
@@ -153,17 +154,28 @@ export default function FeatureForm({
           emptyAssertion={emptyAssertion}
           emptyDbAssertion={emptyDbAssertion}
         />
-      ))}
+       ))}
 
-      <button type="button" className="btn btn--ghost w-full justify-center py-3 border-dashed" onClick={onAddScenario}>
-        <PlusCircle size={16} /> Agregar escenario
-      </button>
+      <ActionButton
+        icon={PlusCircle}
+        label="Agregar escenario"
+        onClick={onAddScenario}
+        variant="ghost"
+        size="lg"
+        className="w-full justify-center"
+      />
 
       {/* ── Submit ── */}
       <div className="flex justify-end pt-4 pb-2">
-        <button type="submit" className="btn btn--primary px-8 py-3 text-base" disabled={loading}>
-          {loading ? <><span className="spinner" /> Generando...</> : <><Zap size={16} /> Generate Feature</>}
-        </button>
+        <ActionButton
+          icon={loading ? undefined : Zap}
+          label={loading ? "Generando..." : "Generate Feature"}
+          onClick={onSubmit}
+          variant="success"
+          size="lg"
+          disabled={loading}
+          className={loading ? "w-auto" : ""}
+        />
       </div>
     </form>
   );

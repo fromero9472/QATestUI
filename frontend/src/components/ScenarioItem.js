@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ChevronDown, ChevronUp, Trash2, PlusCircle, X } from 'lucide-react';
+import { ActionButton } from './index';
 import './ScenarioItem.css';
 
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
@@ -52,17 +53,26 @@ function KVList({ items, onAdd, onRemove, onChange, keyPlaceholder, valuePlaceho
           <input className="form-control flex-1 !py-2 !text-xs" type="text"
             placeholder={valuePlaceholder} value={item.value}
             onChange={e => onChange(i, 'value', e.target.value)} />
-          {items.length > 1 && (
-            <button type="button" onClick={() => onRemove(i)}
-              className="w-7 h-7 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 flex items-center justify-center transition-colors shrink-0">
-              <X size={12} />
-            </button>
-          )}
+           {items.length > 1 && (
+             <ActionButton
+               icon={X}
+               onClick={() => onRemove(i)}
+               variant="danger"
+               size="sm"
+               className="!p-1 !w-7 !h-7 !rounded-lg"
+               title="Eliminar"
+             />
+           )}
         </div>
       ))}
-      <button type="button" className="btn btn--ghost btn--sm mt-1" onClick={onAdd}>
-        <PlusCircle size={13} /> {addLabel}
-      </button>
+       <ActionButton
+         icon={PlusCircle}
+         label={addLabel}
+         onClick={onAdd}
+         variant="ghost"
+         size="sm"
+         className="mt-1"
+       />
     </div>
   );
 }
@@ -121,10 +131,14 @@ export default function ScenarioItem({
             className="w-7 h-7 rounded-lg bg-[#1e293b] hover:bg-[#263348] text-slate-400 hover:text-white flex items-center justify-center transition-colors">
             {collapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
           </button>
-          <button type="button" onClick={e => { e.stopPropagation(); onRemove(si); }}
-            className="w-7 h-7 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 flex items-center justify-center transition-colors">
-            <Trash2 size={13} />
-          </button>
+           <ActionButton
+             icon={Trash2}
+             onClick={e => { e.stopPropagation(); onRemove(si); }}
+             variant="danger"
+             size="sm"
+             className="!w-7 !h-7"
+             title="Eliminar escenario"
+           />
         </div>
       </div>
 
