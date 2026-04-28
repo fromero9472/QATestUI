@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import {
   CheckCircle, XCircle, AlertCircle, Clock, Activity, Zap, Copy,
-  ChevronDown, ChevronUp, Filter, Search, Eye, FileJson, TrendingUp
+  ChevronDown, ChevronUp, Filter, Search, Eye, FileJson, TrendingUp, Play
 } from 'lucide-react';
 import { StatusBadge, StatusIcon, MetricCard } from './StatusBadge';
 import { FiltersPanel, AdvancedFilters, applyFilters } from './FiltersPanel';
@@ -101,10 +101,11 @@ function ExecutionSummary({ report, env, feature, onCopySummary }) {
 /**
  * Tabla de escenarios ejecutados - MEJORADA
  */
-export function ScenariosTable({ scenarios = [], onSelectScenario, onCopyError }) {
+export function ScenariosTable({ scenarios = [], onSelectScenario, onCopyError, onRunScenario, running, runningScenarioKey }) {
   const [filterStatus, setFilterStatus] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [sortBy, setSortBy] = useState('name');
+  const cleanScenarioName = (name = '') => String(name).replace(/^\[[^\]]+\]\s*/, '');
 
   const normalized = scenarios.map(s => ({
     name: s.name || 'Unknown',
@@ -206,7 +207,7 @@ export function ScenariosTable({ scenarios = [], onSelectScenario, onCopyError }
             {filtered.map((scenario, idx) => (
               <tr key={idx} className="border-b border-white/5 hover:bg-white/5 transition-colors">
                 <td className="px-4 py-3 text-slate-300 font-mono break-words whitespace-normal leading-relaxed">
-                  {scenario.name}
+                  {cleanScenarioName(scenario.name)}
                 </td>
                 <td className="text-center px-4 py-3">
                   <StatusBadge status={scenario.status} size="sm" />
@@ -215,6 +216,14 @@ export function ScenariosTable({ scenarios = [], onSelectScenario, onCopyError }
                   {formatDuration(scenario.durationMs)}
                 </td>
                 <td className="text-center px-4 py-3 space-x-1">
+                  <button
+                    onClick={() => onRunScenario?.(scenario)}
+                    disabled={running || !scenario.line}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-green-500/10 border border-green-500/20 text-green-300 hover:bg-green-500/20 transition-all text-[10px] font-semibold disabled:opacity-40"
+                  >
+                    <Play size={11} />
+                    {runningScenarioKey === scenario.id ? 'Running' : 'Run'}
+                  </button>
                   <button
                     onClick={() => onSelectScenario?.(scenario)}
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-violet-500/10 border border-violet-500/20 text-violet-300 hover:bg-violet-500/20 transition-all text-[10px] font-semibold"
@@ -242,7 +251,7 @@ export function ScenariosTable({ scenarios = [], onSelectScenario, onCopyError }
 /**
  * Componente principal del panel de reporting - MEJORADO
  */
-export default function ReportingPanel({ runResult, env, feature, selected, onExport }) {
+export default function ReportingPanel({ runResult, env, feature, selected, onExport, onRunScenario, running, runningScenarioKey }) {
   const [selectedScenario, setSelectedScenario] = useState(null);
 
   // Normalizar antes de renderizar
@@ -296,6 +305,9 @@ export default function ReportingPanel({ runResult, env, feature, selected, onEx
         scenarios={report.scenarios || []}
         onSelectScenario={setSelectedScenario}
         onCopyError={handleCopyError}
+        onRunScenario={onRunScenario}
+        running={running}
+        runningScenarioKey={runningScenarioKey}
       />
 
       {/* Modal de Evidencia */}

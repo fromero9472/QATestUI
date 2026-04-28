@@ -329,6 +329,21 @@ function parseScenarios(logs, runResult) {
   return scenarios;
 }
 
+function parseFeatureScenarios(content = '') {
+  const lines = String(content || '').split(/\r?\n/);
+  const scenarios = [];
+  lines.forEach((line, idx) => {
+    const match = line.match(/^\s*Scenario(?: Outline)?:\s*(.+)\s*$/i);
+    if (!match) return;
+    scenarios.push({
+      id: `feature-scenario-${idx + 1}`,
+      line: idx + 1,
+      name: match[1].trim() || `Scenario ${scenarios.length + 1}`,
+    });
+  });
+  return scenarios;
+}
+
 function generateKarateFeature(form) {
   const safe = (v = '') => String(v).replace(/\r?\n/g, ' ').trim();
   const featureName = safe(form?.featureName || 'FeatureImportado');
@@ -804,9 +819,11 @@ export default function FeatureRunner() {
    const [aiPanelOpen, setAiPanelOpen] = useState(false);
      const [showCreate,  setShowCreate]  = useState(false);
      const [toastMsg,    setToastMsg]    = useState('');
-     const [reports, setReports] = useState(() => loadReports());
-     const [logsCopied, setLogsCopied] = useState(false);
-     const [panelWidth, setPanelWidth] = useState(() => {
+      const [reports, setReports] = useState(() => loadReports());
+      const [logsCopied, setLogsCopied] = useState(false);
+      const [featureScenarios, setFeatureScenarios] = useState([]);
+      const [runningScenarioKey, setRunningScenarioKey] = useState(null);
+      const [panelWidth, setPanelWidth] = useState(() => {
        try {
          const saved = localStorage.getItem('qatestui_runner_panel_width');
          return saved ? parseInt(saved) : 224;
@@ -922,11 +939,17 @@ export default function FeatureRunner() {
       setRunResult(null);
       setLogs([]);
       setFileContent('');
+      setFeatureScenarios([]);
       try {
         const d = await api('GET', `/runner/features/content?path=${encodeURIComponent(feature.relativePath)}`);
-        setFileContent(d.content || '');
+        const nextContent = d.content || '';
+        setFileContent(nextContent);
+        setFeatureScenarios(parseFeatureScenarios(nextContent));
       }
-      catch { setFileContent('// Error al cargar el archivo'); }
+      catch {
+        setFileContent('// Error al cargar el archivo');
+        setFeatureScenarios([]);
+      }
     };
 
    const handleRename = async (feature, newName) => {
@@ -987,26 +1010,45 @@ export default function FeatureRunner() {
     e.target.value = '';
   };
 
-    const runFeature = async (featurePath) => {
-      setLogs([]); setRunResult(null); setRunning(true);
+    const mergeScenarioIntoReport = (currentReport, scenarioPatch) => {
+      if (!currentReport || !scenarioPatch) return currentReport;
+      const existingScenarios = Array.isArray(currentReport.scenarios) ? currentReport.scenarios : [];
+      const lineFromPatch = Number(scenarioPatch.line);
+      const idx = existingScenarios.findIndex((s) => {
+        const sameLine = Number.isInteger(lineFromPatch) && Number(s?.line) === lineFromPatch;
+        const sameName = String(s?.name || '').trim() === String(scenarioPatch?.name || '').trim();
+        return sameLine || sameName;
+      });
+      if (idx < 0) return currentReport;
+      const mergedScenarios = [...existingScenarios];
+      mergedScenarios[idx] = { ...mergedScenarios[idx], ...scenarioPatch };
+      const passed = mergedScenarios.filter((s) => String(s?.status || '').toUpperCase() === 'PASSED').length;
+      const failed = mergedScenarios.filter((s) => String(s?.status || '').toUpperCase() === 'FAILED').length;
+      const skipped = mergedScenarios.filter((s) => String(s?.status || '').toUpperCase() === 'SKIPPED').length;
+      return {
+        ...currentReport,
+        status: failed > 0 ? 'FAILED' : 'PASSED',
+        durationMs: mergedScenarios.reduce((acc, s) => acc + (Number(s?.durationMs) || 0), 0),
+        summary: { total: mergedScenarios.length, passed, failed, skipped },
+        scenarios: mergedScenarios,
+      };
+    };
+
+    const runFeature = async ({ featurePath = null, scenario = null } = {}) => {
+      setLogs([]); setRunResult(null); setRunning(true); setRunningScenarioKey(scenario?.id || null);
       let tempLogs = [];
-
-      // Log de inicio
-      console.log(`[RUNNER] Iniciando ejecución de feature: ${featurePath || 'ALL'}`);
-      console.log(`[RUNNER] Selected: ${selected?.relativePath}`);
-
       try {
         const globalProps = parsePropsJson(runnerProps.global, 'Properties globales');
         const selectedFeaturePropsRaw = featurePath ? (runnerProps.perFeature?.[featurePath] || '{}') : '{}';
         const selectedFeatureProps = parsePropsJson(selectedFeaturePropsRaw, 'Properties del feature');
         const mergedProperties = { ...globalProps, ...selectedFeatureProps };
-
         const res = await fetch(`${BACKEND_URL}/runner/run`, {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             featurePath: featurePath || null,
+            scenarioLine: scenario?.line ?? null,
             env,
             baseUrl: envs.find(e => e.id === env)?.baseUrl || '',
             properties: mergedProperties,
@@ -1022,36 +1064,24 @@ export default function FeatureRunner() {
             try {
               const { type, data } = JSON.parse(line.slice(6));
               if (type === 'done') {
-                console.log(`[RUNNER] Ejecución completada. Exit code: ${data.exitCode}`);
                 setRunResult(data);
                 if (data.summary) setLastReport(data.summary);
-
-
-                // Generar reporte estructurado con los logs capturados
-                const report = generateExecutionReport(
-                  data,
-                  selected?.name || 'Tests',
-                  env,
-                  envs.find(e => e.id === env)?.baseUrl || '',
-                  tempLogs
-                );
-
-                // Determinar qué path usar para guardar el reporte
+                const report = generateExecutionReport(data, selected?.name || 'Tests', env, envs.find(e => e.id === env)?.baseUrl || '', tempLogs);
+                const scenariosWithLine = (report.scenarios || []).map((sc) => {
+                  const lineFromFeature = featureScenarios.find((fsc) => String(fsc.name).trim() === String(sc.name).trim())?.line;
+                  return lineFromFeature ? { ...sc, line: lineFromFeature } : sc;
+                });
+                const normalizedReport = { ...report, scenarios: scenariosWithLine };
                 const reportPath = featurePath || selected?.relativePath;
-
-                console.log(`[RUNNER] Guardando reporte con path: ${reportPath}`);
-                console.log(`[RUNNER] Report total: ${report.summary.total}, passed: ${report.summary.passed}, failed: ${report.summary.failed}`);
-
                 if (reportPath) {
-                  // Guardar reporte con el path correcto
-                  const updatedReports = saveReportForFeature(reports, reportPath, report);
-                  console.log(`[RUNNER] Reports actualizado:`, updatedReports);
+                  const existingReport = getReportForFeature(reports, reportPath);
+                  const nextReport = scenario && normalizedReport?.scenarios?.[0]
+                    ? mergeScenarioIntoReport(existingReport, { ...normalizedReport.scenarios[0], line: scenario.line, name: scenario.name })
+                    : normalizedReport;
+                  const updatedReports = saveReportForFeature(reports, reportPath, nextReport);
                   setReports(updatedReports);
-                } else {
-                  console.warn('⚠️ No se pudo guardar el reporte: featurePath y selected.relativePath están vacíos');
                 }
-              }
-              else {
+              } else {
                 const newLog = { type, text: typeof data === 'string' ? data : JSON.stringify(data) };
                 tempLogs.push(newLog);
                 setLogs(prev => [...prev, newLog]);
@@ -1066,7 +1096,10 @@ export default function FeatureRunner() {
         tempLogs.push(errorLog);
         setLogs(prev => [...prev, errorLog]);
         setRunResult({ success: false, exitCode: 1, message: 'Error de conexion' });
-      } finally { setRunning(false); }
+      } finally {
+        setRunning(false);
+        setRunningScenarioKey(null);
+      }
     };
 
     const handleExportReport = (report, format = 'json') => {
@@ -1226,7 +1259,7 @@ export default function FeatureRunner() {
 
               {/* Correr todos */}
               <div className="mt-4 pt-3 border-t border-white/5">
-                       <button onClick={() => runFeature(null)} disabled={running}
+                       <button onClick={() => runFeature({ featurePath: null })} disabled={running}
                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-violet-600/80 hover:bg-violet-500 disabled:opacity-40 text-white text-xs font-semibold transition-all">
                    {running ? <Spinner size="sm" color="violet" /> : <Play size={12}/>}
                    Correr todos
@@ -1250,7 +1283,7 @@ export default function FeatureRunner() {
                         className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-slate-400 hover:text-blue-400 text-xs font-semibold transition-all">
                         <Download size={12}/> Exportar
                       </button>
-                       <button onClick={() => runFeature(selected.relativePath)} disabled={running}
+                       <button onClick={() => runFeature({ featurePath: selected.relativePath })} disabled={running}
                          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-green-600/80 hover:bg-green-500 disabled:opacity-40 text-white text-xs font-semibold transition-all">
                          {running ? <Spinner size="sm" /> : <Play size={13}/>} Ejecutar ({env})
                        </button>
@@ -1263,8 +1296,36 @@ export default function FeatureRunner() {
                     relativePath={selected?.relativePath}
                     initialContent={fileContent}
                     backendUrl={BACKEND_URL}
-                    onSaved={(newContent) => setFileContent(newContent)}
+                    onSaved={(newContent) => {
+                      setFileContent(newContent);
+                      setFeatureScenarios(parseFeatureScenarios(newContent));
+                    }}
                   />
+                )}
+
+                {featureScenarios.length > 0 && (
+                  <div className="card">
+                    <p className="card__title mb-3 text-xs">Escenarios del Feature ({featureScenarios.length})</p>
+                    <div className="space-y-2 max-h-64 overflow-y-auto">
+                      {featureScenarios.map((scenario) => (
+                        <div key={scenario.id} className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-black/20 border border-white/10">
+                          <div className="min-w-0">
+                            <p className="text-xs text-slate-200 break-words">{scenario.name}</p>
+                            <p className="text-[10px] text-slate-500">Linea {scenario.line}</p>
+                          </div>
+                          <button
+                            onClick={() => runFeature({ featurePath: selected.relativePath, scenario })}
+                            disabled={running}
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-violet-500/15 border border-violet-500/30 text-violet-300 hover:bg-violet-500/25 disabled:opacity-40 text-xs font-semibold transition-all"
+                            title="Ejecutar solo este escenario"
+                          >
+                            {running && runningScenarioKey === scenario.id ? <Spinner size="sm" /> : <Play size={11} />}
+                            Run
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </>
             ) : (
@@ -1287,6 +1348,9 @@ export default function FeatureRunner() {
                            env={env}
                            feature={selected}
                            selected={selected}
+                           onRunScenario={(scenario) => runFeature({ featurePath: selected.relativePath, scenario })}
+                           runningScenarioKey={runningScenarioKey}
+                           running={running}
                            onExport={handleExportReport}
                          />
                          <button
