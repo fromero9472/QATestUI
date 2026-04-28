@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  Play, RefreshCw, FileCode, ChevronRight, Terminal,
+  Play, RefreshCw, FileCode, Terminal,
   CheckCircle, XCircle, Loader, Wifi, WifiOff, BarChart2,
   Globe, Sparkles, AlertTriangle, Lightbulb, ChevronDown, ChevronUp,
   Cpu, ArrowRight, Plus, Upload, Download, Pencil, Trash2, Check, X, Settings,
@@ -332,13 +332,12 @@ function FeatureItem({ feature, selected, onSelect, onRename, onDelete, onExport
     );
   }
 
-  return (
-    <li onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)}>
-      <div className={`flex items-center gap-1 px-2.5 py-2 rounded-xl text-xs transition-all cursor-pointer
-        ${selected ? 'bg-violet-600 border border-violet-500 text-white font-semibold' : 'hover:bg-white/5 text-slate-300 border border-transparent'}`}
-        onClick={() => onSelect(feature)}>
-        <ChevronRight size={10} className="shrink-0 opacity-50"/>
-        <span className="truncate font-mono flex-1">{feature.name.replace('.feature','')}</span>
+   return (
+     <li onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)}>
+       <div className={`flex items-center gap-1 px-2.5 py-2 rounded-xl text-xs transition-all cursor-pointer
+         ${selected ? 'bg-violet-600 border border-violet-500 text-white font-semibold' : 'hover:bg-white/5 text-slate-300 border border-transparent'}`}
+         onClick={() => onSelect(feature)}>
+         <span className="truncate font-mono flex-1">{feature.name.replace('.feature','')}</span>
         {/* Botones inline: solo al hover */}
         {hovering && (
           <div className="flex items-center gap-0.5 shrink-0" onClick={e => e.stopPropagation()}>
@@ -518,22 +517,21 @@ export default function FeatureRunner() {
   const [agentStatus, setAgentStatus] = useState('checking');
   const [features,    setFeatures]    = useState([]);
   const [loadingList, setLoadingList] = useState(false);
-  const [selected,    setSelected]    = useState(null);
-  const [fileContent, setFileContent] = useState('');
-  const [envs,        setEnvs]        = useState(() => loadEnvs());
-  const [env,         setEnv]         = useState(() => loadEnvs()[0]?.id || 'desa');
-  const [showEnvConfig, setShowEnvConfig] = useState(false);
-  const [logs,        setLogs]        = useState([]);
-  const [running,     setRunning]     = useState(false);
-  const [runResult,   setRunResult]   = useState(null);
-  const [lastReport,  setLastReport]  = useState(null);
-  const [aiPanelOpen, setAiPanelOpen] = useState(false);
-  const [showCreate,  setShowCreate]  = useState(false);
-  const [toastMsg,    setToastMsg]    = useState('');
-  const [showProps,   setShowProps]   = useState(false);
-  const [runnerProps, setRunnerProps] = useState(() => loadRunnerProperties());
-  const logsEndRef   = useRef(null);
-  const importRef    = useRef(null);
+   const [selected,    setSelected]    = useState(null);
+   const [fileContent, setFileContent] = useState('');
+   const [envs,        setEnvs]        = useState(() => loadEnvs());
+   const [env,         setEnv]         = useState(() => loadEnvs()[0]?.id || 'desa');
+   const [showEnvConfig, setShowEnvConfig] = useState(false);
+   const runnerProps = loadRunnerProperties();
+   const [logs,        setLogs]        = useState([]);
+   const [running,     setRunning]     = useState(false);
+   const [runResult,   setRunResult]   = useState(null);
+   const [lastReport,  setLastReport]  = useState(null);
+   const [aiPanelOpen, setAiPanelOpen] = useState(false);
+   const [showCreate,  setShowCreate]  = useState(false);
+   const [toastMsg,    setToastMsg]    = useState('');
+   const logsEndRef   = useRef(null);
+   const importRef    = useRef(null);
 
   useEffect(() => { checkAgent(); }, []); // eslint-disable-line
   useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [logs]);
@@ -589,12 +587,11 @@ export default function FeatureRunner() {
     }
   };
 
-  const persistRunnerProps = (next) => {
-    setRunnerProps(next);
-    localStorage.setItem(RUNNER_PROPS_STORAGE_KEY, JSON.stringify(next));
-  };
+   const persistRunnerProps = (next) => {
+     localStorage.setItem(RUNNER_PROPS_STORAGE_KEY, JSON.stringify(next));
+   };
 
-  const handleSaveEnvs = (newEnvs) => {
+   const handleSaveEnvs = (newEnvs) => {
     saveEnvs(newEnvs);
     setEnvs(newEnvs);
     if (!newEnvs.find(e => e.id === env)) setEnv(newEnvs[0]?.id || '');
@@ -631,25 +628,13 @@ export default function FeatureRunner() {
     try { const d = await api('GET', '/runner/report'); if (d.success) setLastReport(d.summary); } catch {}
   };
 
-  const selectFeature = async (feature) => {
-    setSelected(feature); setRunResult(null); setLogs([]); setFileContent('');
-    try { const d = await api('GET', `/runner/features/content?path=${encodeURIComponent(feature.relativePath)}`); setFileContent(d.content || ''); }
-    catch { setFileContent('// Error al cargar el archivo'); }
-  };
+   const selectFeature = async (feature) => {
+     setSelected(feature); setRunResult(null); setLogs([]); setFileContent('');
+     try { const d = await api('GET', `/runner/features/content?path=${encodeURIComponent(feature.relativePath)}`); setFileContent(d.content || ''); }
+     catch { setFileContent('// Error al cargar el archivo'); }
+   };
 
-  const updateGlobalProps = (value) => {
-    persistRunnerProps({ ...runnerProps, global: value });
-  };
-
-  const updateSelectedFeatureProps = (value) => {
-    if (!selected?.relativePath) return;
-    persistRunnerProps({
-      ...runnerProps,
-      perFeature: { ...runnerProps.perFeature, [selected.relativePath]: value },
-    });
-  };
-
-  const handleRename = async (feature, newName) => {
+   const handleRename = async (feature, newName) => {
     const d = await api('POST', '/runner/features/rename', { oldPath: feature.relativePath, newName });
     if (d.success) {
       toast(`✅ Renombrado a ${d.feature.name}`);
@@ -783,59 +768,23 @@ export default function FeatureRunner() {
                     ${env === e.id ? 'bg-violet-600 text-white shadow shadow-violet-500/30' : 'text-slate-400 hover:text-slate-200'}`}>
                   {e.label}
                 </button>
-              ))}
-            </div>
-            <button onClick={() => setShowEnvConfig(true)} title="Configurar ambientes"
-              className="p-1.5 rounded-lg hover:bg-white/5 text-slate-500 hover:text-violet-400 transition-all">
-              <Settings size={13}/>
-            </button>
-            <button onClick={() => setShowProps(v => !v)} title="Configurar properties"
-              className={`p-1.5 rounded-lg transition-all ${showProps ? 'bg-violet-500/10 text-violet-300' : 'hover:bg-white/5 text-slate-500 hover:text-violet-400'}`}>
-              <Terminal size={13}/>
-            </button>
-          </div>
+               ))}
+             </div>
+             <button onClick={() => setShowEnvConfig(true)} title="Configurar ambientes"
+               className="p-1.5 rounded-lg hover:bg-white/5 text-slate-500 hover:text-violet-400 transition-all">
+               <Settings size={13}/>
+             </button>
+           </div>
           {/* Base URL del ambiente seleccionado */}
           {envs.find(e => e.id === env)?.baseUrl && (
             <p className="text-[10px] font-mono text-slate-500 truncate max-w-xs" title={envs.find(e => e.id === env)?.baseUrl}>
               URL: {envs.find(e => e.id === env)?.baseUrl}
             </p>
           )}
-        </div>
-      </div>
+         </div>
+       </div>
 
-      {showProps && (
-        <div className="card">
-          <div className="flex items-center justify-between mb-3">
-            <p className="card__title mb-0"><Terminal size={13}/> Properties de ejecuci�n</p>
-            <p className="text-[10px] text-slate-500 font-mono">se env�an como -Dkey=value</p>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <p className="text-[11px] font-semibold text-slate-300 mb-1">Globales (todos los tests)</p>
-              <textarea
-                className="w-full min-h-[120px] bg-black/30 border border-white/10 rounded-xl p-2 font-mono text-xs text-slate-200 outline-none focus:border-violet-500"
-                value={runnerProps.global}
-                onChange={(e) => updateGlobalProps(e.target.value)}
-                placeholder={'{\n  "KIBANA_USER": "usuario",\n  "KIBANA_PASS": "secreto"\n}'}
-              />
-            </div>
-            <div>
-              <p className="text-[11px] font-semibold text-slate-300 mb-1">
-                Override por feature {selected ? <span className="text-slate-500 font-mono">({selected.name})</span> : ''}
-              </p>
-              <textarea
-                disabled={!selected}
-                className="w-full min-h-[120px] bg-black/30 border border-white/10 rounded-xl p-2 font-mono text-xs text-slate-200 outline-none focus:border-violet-500 disabled:opacity-40"
-                value={selected ? (runnerProps.perFeature?.[selected.relativePath] || '{}') : '{}'}
-                onChange={(e) => updateSelectedFeatureProps(e.target.value)}
-                placeholder={'{\n  "db.url": "jdbc:oracle:thin:@...",\n  "db.user": "usuario",\n  "db.password": "clave"\n}'}
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {agentStatus === 'down' && (
+       {agentStatus === 'down' && (
         <div className="flex items-start gap-3 p-4 rounded-2xl bg-red-500/10 border border-red-500/30 text-red-300">
           <WifiOff size={16} className="mt-0.5 shrink-0"/>
           <div>
