@@ -2,7 +2,7 @@
 import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
 import 'prismjs/themes/prism-tomorrow.css';
-import { Save, Loader, CheckCircle, AlertTriangle, Edit3, Eye, FileText, Code2 } from 'lucide-react';
+import { Save, Loader, CheckCircle, AlertTriangle, Edit3, Eye, FileText, Code2, Copy, Check } from 'lucide-react';
 
 Prism.languages.karate = {
   comment: { pattern: /#.*/, greedy: true },
@@ -225,6 +225,7 @@ export default function KarateEditor({ relativePath, initialContent, backendUrl,
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState(null);
   const [mode, setMode] = useState('edit'); // edit | code | functional
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     setCode(initialContent || '');
@@ -262,6 +263,16 @@ export default function KarateEditor({ relativePath, initialContent, backendUrl,
       setSaving(false);
     }
   }, [dirty, relativePath, code, backendUrl, onSaved]);
+
+  const handleCopyCode = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      console.error('Error copying code');
+    }
+  }, [code]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -317,17 +328,25 @@ export default function KarateEditor({ relativePath, initialContent, backendUrl,
             >
               <FileText size={10} /> Funcional
             </button>
-          </div>
+           </div>
 
-          <button
-            onClick={handleSave}
-            disabled={!dirty || saving}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-600/80 hover:bg-green-500 disabled:opacity-30 disabled:cursor-not-allowed text-white text-[11px] font-semibold transition-all"
-          >
-            {saving ? <Loader size={11} className="animate-spin" /> : <Save size={11} />}
-            {saving ? 'Guardando...' : 'Guardar'}
-            <span className="text-green-300 text-[9px] font-normal">Ctrl+S</span>
-          </button>
+           <div className="flex items-center gap-2">
+             <button
+               onClick={handleCopyCode}
+               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all ${copied ? 'bg-green-600/80 text-white' : 'bg-white/5 border border-white/10 text-slate-400 hover:text-slate-200'}`}
+             >
+               {copied ? <><Check size={11} /> Copiado!</> : <><Copy size={11} /> Copiar</>}
+             </button>
+             <button
+               onClick={handleSave}
+               disabled={!dirty || saving}
+               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-600/80 hover:bg-green-500 disabled:opacity-30 disabled:cursor-not-allowed text-white text-[11px] font-semibold transition-all"
+             >
+               {saving ? <Loader size={11} className="animate-spin" /> : <Save size={11} />}
+               {saving ? 'Guardando...' : 'Guardar'}
+               <span className="text-green-300 text-[9px] font-normal">Ctrl+S</span>
+             </button>
+           </div>
         </div>
       </div>
 

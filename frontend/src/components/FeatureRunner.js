@@ -3,7 +3,7 @@ import {
   Play, RefreshCw, FileCode, Terminal,
   CheckCircle, XCircle, Loader, Wifi, WifiOff, BarChart2,
   Globe, Sparkles, AlertTriangle, Lightbulb, ChevronDown, ChevronUp,
-  Cpu, ArrowRight, Plus, Upload, Download, Pencil, Trash2, Check, X, Settings,
+  Cpu, ArrowRight, Plus, Upload, Download, Pencil, Trash2, Check, X, Settings, Copy,
 } from 'lucide-react';
 import { useAuth } from '../AuthContext';
 import KarateEditor from './KarateEditor';
@@ -608,10 +608,10 @@ function FeatureItem({ feature, selected, onSelect, onRename, onDelete, onExport
 
    return (
      <li onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)}>
-       <div className={`flex items-center gap-1 px-2.5 py-2 rounded-xl text-xs transition-all cursor-pointer
-         ${selected ? 'bg-violet-600 border border-violet-500 text-white font-semibold' : 'hover:bg-white/5 text-slate-300 border border-transparent'}`}
-         onClick={() => onSelect(feature)}>
-         <span className="truncate font-mono flex-1">{feature.name.replace('.feature','')}</span>
+        <div className={`flex items-center gap-1 px-2 py-1.5 rounded-xl text-[11px] transition-all cursor-pointer
+          ${selected ? 'bg-violet-600 border border-violet-500 text-white font-semibold' : 'hover:bg-white/5 text-slate-300 border border-transparent'}`}
+          onClick={() => onSelect(feature)}>
+          <span className="break-words font-mono flex-1 whitespace-normal leading-tight">{feature.name.replace('.feature','')}</span>
         {/* Botones inline: solo al hover */}
         {hovering && (
           <div className="flex items-center gap-0.5 shrink-0" onClick={e => e.stopPropagation()}>
@@ -802,11 +802,18 @@ export default function FeatureRunner() {
    const [runResult,   setRunResult]   = useState(null);
    const [lastReport,  setLastReport]  = useState(null);
    const [aiPanelOpen, setAiPanelOpen] = useState(false);
-   const [showCreate,  setShowCreate]  = useState(false);
-    const [toastMsg,    setToastMsg]    = useState('');
-    const [reports, setReports] = useState(() => loadReports());
-    const logsEndRef   = useRef(null);
-    const importRef    = useRef(null);
+     const [showCreate,  setShowCreate]  = useState(false);
+     const [toastMsg,    setToastMsg]    = useState('');
+     const [reports, setReports] = useState(() => loadReports());
+     const [logsCopied, setLogsCopied] = useState(false);
+     const [panelWidth, setPanelWidth] = useState(() => {
+       try {
+         const saved = localStorage.getItem('qatestui_runner_panel_width');
+         return saved ? parseInt(saved) : 224;
+       } catch { return 224; }
+     });
+     const logsEndRef   = useRef(null);
+     const importRef    = useRef(null);
 
     useEffect(() => { checkAgent(); }, []); // eslint-disable-line
     useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [logs]);
@@ -867,12 +874,18 @@ export default function FeatureRunner() {
      localStorage.setItem(RUNNER_PROPS_STORAGE_KEY, JSON.stringify(next));
    };
 
-   const handleSaveEnvs = (newEnvs) => {
-    saveEnvs(newEnvs);
-    setEnvs(newEnvs);
-    if (!newEnvs.find(e => e.id === env)) setEnv(newEnvs[0]?.id || '');
-    toast('Ambientes guardados');
-  };
+    const handleSaveEnvs = (newEnvs) => {
+     saveEnvs(newEnvs);
+     setEnvs(newEnvs);
+     if (!newEnvs.find(e => e.id === env)) setEnv(newEnvs[0]?.id || '');
+     toast('Ambientes guardados');
+   };
+
+   const handleResizePanel = (delta) => {
+     const newWidth = Math.max(140, Math.min(500, panelWidth + delta));
+     setPanelWidth(newWidth);
+     localStorage.setItem('qatestui_runner_panel_width', newWidth.toString());
+   };
 
   const api = async (method, path, body) => {
     const res = await fetch(`${BACKEND_URL}${path}`, {
@@ -1069,17 +1082,28 @@ export default function FeatureRunner() {
      }
    };
 
-    const handleClearReport = () => {
-      if (selected?.relativePath) {
-        const updatedReports = { ...reports };
-        delete updatedReports[selected.relativePath];
-        setReports(updatedReports);
-        saveReports(updatedReports);
-      }
-      setRunResult(null);
-      setLogs([]);
-      toast('🗑 Reporte limpiado');
-    };
+     const handleClearReport = () => {
+       if (selected?.relativePath) {
+         const updatedReports = { ...reports };
+         delete updatedReports[selected.relativePath];
+         setReports(updatedReports);
+         saveReports(updatedReports);
+       }
+       setRunResult(null);
+       setLogs([]);
+       toast('🗑 Reporte limpiado');
+     };
+
+     const handleCopyLogs = async () => {
+       try {
+         const logsText = logs.map(l => l.text).join('\n');
+         await navigator.clipboard.writeText(logsText);
+         setLogsCopied(true);
+         setTimeout(() => setLogsCopied(false), 2000);
+       } catch {
+         toast('Error al copiar los logs');
+       }
+     };
 
   return (
     <div className="space-y-4">
@@ -1144,19 +1168,23 @@ export default function FeatureRunner() {
         </div>
       )}
 
-      {agentStatus === 'ok' && (
-        <div className="flex gap-4" style={{ minHeight: '60vh' }}>
+       {agentStatus === 'ok' && (
+          <div className="flex gap-4" style={{ minHeight: '60vh' }}>
 
-          {/* Lista features con gesti?n */}
-          <div className="w-64 shrink-0 flex flex-col gap-3">
-            <div className="card flex-1 flex flex-col">
-              {/* Header lista */}
-              <div className="flex items-center justify-between mb-3">
-                <p className="card__title mb-0"><FileCode size={13}/> Features</p>
-                <button onClick={fetchFeatures} className="p-1 rounded-lg hover:bg-white/5 text-slate-400 hover:text-slate-200 transition-all">
-                  <RefreshCw size={12} className={loadingList ? 'animate-spin' : ''}/>
-                </button>
-              </div>
+            {/* Lista features con gestión */}
+            <div style={{ width: `${panelWidth}px` }} className="shrink-0 flex flex-col gap-3">
+             <div className="card flex-1 flex flex-col">
+               {/* Header lista */}
+               <div className="flex items-center justify-between mb-2">
+                 <p className="card__title mb-0 text-xs"><FileCode size={13}/> Features</p>
+                 <div className="flex items-center gap-0.5">
+                   <button onClick={() => handleResizePanel(-20)} title="Achicar" className="p-1 rounded hover:bg-white/10 text-slate-500 hover:text-slate-300 transition-all"><span className="text-xs">−</span></button>
+                   <button onClick={() => handleResizePanel(20)} title="Agrandar" className="p-1 rounded hover:bg-white/10 text-slate-500 hover:text-slate-300 transition-all"><span className="text-xs">+</span></button>
+                   <button onClick={fetchFeatures} className="p-1 rounded-lg hover:bg-white/5 text-slate-400 hover:text-slate-200 transition-all">
+                     <RefreshCw size={12} className={loadingList ? 'animate-spin' : ''}/>
+                   </button>
+                 </div>
+               </div>
 
               {/* Acciones: crear + importar */}
               <div className="flex gap-1.5 mb-3">
@@ -1172,22 +1200,29 @@ export default function FeatureRunner() {
               </div>
 
               {/* Lista */}
-              {loadingList
-                ? <div className="flex items-center justify-center py-8 text-slate-500 text-xs gap-2"><Loader size={13} className="animate-spin"/>Cargando...</div>
-                : features.length === 0
-                  ? <p className="text-xs text-slate-500 text-center py-8">No se encontraron .feature</p>
-                  : <ul className="space-y-0.5 flex-1 overflow-y-auto">
-                      {features.map(f => (
-                        <FeatureItem key={f.relativePath} feature={f}
-                          selected={selected?.relativePath === f.relativePath}
-                          onSelect={selectFeature}
-                          onRename={handleRename}
-                          onDelete={handleDelete}
-                          onExport={handleExport}
-                        />
-                      ))}
-                    </ul>
-              }
+               {loadingList
+                 ? <div className="flex items-center justify-center py-8 text-slate-500 text-xs gap-2"><Loader size={13} className="animate-spin"/>Cargando...</div>
+                 : (() => {
+                     // Filtrar features para excluir los especificados
+                     const hiddenFeatures = ['kibana-evidence', 'ocp-evidence', '_TEMPLATE'];
+                     const filteredFeatures = features.filter(f =>
+                       !hiddenFeatures.some(hidden => f.name.replace('.feature', '') === hidden)
+                     );
+                     return filteredFeatures.length === 0
+                       ? <p className="text-xs text-slate-500 text-center py-8">No se encontraron .feature</p>
+                       : <ul className="space-y-0.5 flex-1 overflow-y-auto">
+                           {filteredFeatures.map(f => (
+                             <FeatureItem key={f.relativePath} feature={f}
+                               selected={selected?.relativePath === f.relativePath}
+                               onSelect={selectFeature}
+                               onRename={handleRename}
+                               onDelete={handleDelete}
+                               onExport={handleExport}
+                             />
+                           ))}
+                         </ul>;
+                   })()
+               }
 
               {/* Correr todos */}
               <div className="mt-4 pt-3 border-t border-white/5">
@@ -1204,12 +1239,12 @@ export default function FeatureRunner() {
           <div className="flex-1 flex flex-col gap-4 min-w-0">
             {selected ? (
               <>
-                <div className="card">
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="font-semibold text-sm text-slate-100 font-mono truncate">{selected.name}</p>
-                      <p className="text-xs text-slate-500 mt-0.5">{selected.relativePath}</p>
-                    </div>
+                 <div className="card py-3">
+                   <div className="flex items-start justify-between gap-4">
+                     <div className="min-w-0 flex-1">
+                       <p className="font-semibold text-xs text-slate-100 font-mono break-words whitespace-normal leading-tight">{selected.name}</p>
+                       <p className="text-[10px] text-slate-500 mt-1 break-words leading-tight">{selected.relativePath}</p>
+                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <button onClick={() => handleExport(selected)}
                         className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-slate-400 hover:text-blue-400 text-xs font-semibold transition-all">
@@ -1266,11 +1301,16 @@ export default function FeatureRunner() {
                    return null;
                  })()}
 
-                 {/* Logs cuando hay contenido o está ejecutando */}
-                 {(logs.length > 0 || running) && (
-                   <div className="card">
-                     <p className="card__title mb-3"><Terminal size={13}/> Output en vivo</p>
-                     <div className="bg-black/50 rounded-xl p-3 font-mono text-xs overflow-auto" style={{maxHeight:'300px'}}>
+                  {/* Logs cuando hay contenido o está ejecutando */}
+                  {(logs.length > 0 || running) && (
+                    <div className="card">
+                      <div className="flex items-center justify-between mb-3">
+                        <p className="card__title mb-0"><Terminal size={13}/> Output en vivo</p>
+                        <button onClick={handleCopyLogs} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${logsCopied ? 'bg-green-500/20 border border-green-500/30 text-green-300' : 'bg-white/5 border border-white/10 text-slate-400 hover:text-slate-200'}`}>
+                          {logsCopied ? <><Check size={12}/> Copiado!</> : <><Copy size={12}/> Copiar</>}
+                        </button>
+                      </div>
+                      <div className="bg-black/50 rounded-xl p-3 font-mono text-xs overflow-auto" style={{maxHeight:'300px'}}>
                        {logs.map((log,i) => (
                          <div key={i} className={`leading-relaxed whitespace-pre-wrap break-all ${log.type==='error'?'text-red-400':log.type==='success'?'text-green-400':log.type==='info'?'text-violet-300':'text-slate-300'}`}>
                            {log.text}

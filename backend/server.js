@@ -508,6 +508,37 @@ app.get('/ai-providers', (req, res) => {
 // ─── Handlebars helpers ────────────────────────────────────────────────────────
 Handlebars.registerHelper('upperCase', (str) => (str ? str.toUpperCase() : ''));
 Handlebars.registerHelper('eq', (a, b) => a === b);
+Handlebars.registerHelper('formatAssertionValue', (value, operator) => {
+  // OPS_WITHOUT_VALUE no necesitan valor
+  const opsWithoutValue = ['!= null', '== null', '== true', '== false'];
+  if (opsWithoutValue.includes(operator)) return '';
+
+  // Si no hay valor, devolver vacío
+  if (value === null || value === undefined || value === '') return '';
+
+  // Convertir a string para procesamiento
+  const strValue = String(value).trim();
+
+  // Si ya está entrecomillado (simple o doble), devolverlo tal cual
+  if ((strValue.startsWith("'") && strValue.endsWith("'")) ||
+      (strValue.startsWith('"') && strValue.endsWith('"'))) {
+    return strValue;
+  }
+
+  // Si es un literal booleano, null o número, devolver sin comillas
+  if (strValue === 'null' || strValue === 'true' || strValue === 'false') {
+    return strValue;
+  }
+
+  // Si es un número (validación estricta)
+  if (!isNaN(Number(strValue)) && strValue !== '') {
+    return strValue;
+  }
+
+  // Es un string plano: agregar comillas simples y escapar comillas internas
+  const escaped = strValue.replace(/'/g, "\\'");
+  return `'${escaped}'`;
+});
 
 // ─── Load template ─────────────────────────────────────────────────────────────
 const templatePath = path.join(__dirname, 'templates', 'feature.hbs');
@@ -869,20 +900,27 @@ const normalizeScenarios = (scenarios) =>
     dbAssertions: (s.dbAssertions || [])
       .filter(a => a.column && a.column.trim() && SAFE_DB_ASSERT_COL.test(a.column.trim()))
       .map(a => ({ ...a, column: a.column.trim(), value: sanitizeQuoted(a.value || '') })),
-    // OCP fields
-    enableOcpEvidence: !!s.enableOcpEvidence,
-    assertions: (s.assertions || [])
-      .filter(a => a.field && a.field.trim() && SAFE_RESPONSE_PATH.test(a.field.trim()))
-      .map(a => {
-        const operator = VALID_OPERATORS.includes(a.operator) ? a.operator : '!= null';
-        const rawValue = OPS_WITHOUT_VALUE.includes(operator) ? null : (a.value || '');
-        const formattedValue = rawValue && needsQuotes(rawValue) ? `'${rawValue}'` : rawValue;
-        return {
-          field:    a.field.trim(),
-          operator,
-          value:    formattedValue,
-        };
-      }),
+     // OCP fields
+     enableOcpEvidence: !!s.enableOcpEvidence,
+     assertions: (s.assertions || [])
+       .filter(a => a.field && a.field.trim() && SAFE_RESPONSE_PATH.test(a.field.trim()))
+       .map(a => {
+         const operator = VALID_OPERATORS.includes(a.operator) ? a.operator : '!= null';
+         // Si el operador no necesita valor, no pasar nada
+         if (OPS_WITHOUT_VALUE.includes(operator)) {
+           return {
+             field: a.field.trim(),
+             operator,
+             value: null,
+           };
+         }
+         // Si hay valor, pasarlo RAW al template (el helper formatAssertionValue lo tipificará)
+         return {
+           field: a.field.trim(),
+           operator,
+           value: String(a.value || '').trim(),
+         };
+       }),
   }));
 
 // ─── POST /generate-feature ────────────────────────────────────────────────────

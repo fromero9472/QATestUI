@@ -1,22 +1,25 @@
 Feature: {{featureName}}
 
   Background:
-    * def _featureBaseUrl = '{{baseUrl}}'
-    * url _featureBaseUrl != '' ? _featureBaseUrl : baseUrl
+    * def featureBaseUrl = '{{baseUrl}}'
+    * url featureBaseUrl == '' ? baseUrl : _featureBaseUrl
+    * configure ssl = true
+
 {{#if enableOcp}}
     * def OCP_API   = 'https://api.osen02.claro.amx:6443'
     * def OCP_TOKEN = '{{ocpToken}}'
     * def NAMESPACE = '{{namespace}}'
-    * configure ssl = true
 {{/if}}
 
 {{#each scenarios}}
   # ══════════════════════════════════════════════════════════════════
   Scenario: {{name}}
   # ══════════════════════════════════════════════════════════════════
+
 {{#if enableOcpEvidence}}
     # ── Timestamp para evidencia de logs ───────────────────────────
-    * def logTs = java.time.Instant.now().toString()
+    * def Instant = Java.type('java.time.Instant')
+    * def logTs = Instant.now().toString()
     * karate.log('Log capture desde: ' + logTs)
 
 {{/if}}
@@ -29,12 +32,15 @@ Feature: {{featureName}}
 {{/if}}
     # ── Request ────────────────────────────────────────────────────
     Given path '{{../endpoint}}'
+
 {{#each params}}
     And param {{key}} = '{{value}}'
 {{/each}}
+
 {{#each headers}}
     And header {{key}} = '{{value}}'
 {{/each}}
+
 {{#if body}}
     And request
     """
@@ -43,20 +49,21 @@ Feature: {{featureName}}
 {{/if}}
 
     # ── Execution ──────────────────────────────────────────────────
-    When method {{method}}
+    When method {{../method}}
 
-    # ── Assertions ────────────────────────────────────────────────
+    # ── Assertions ─────────────────────────────────────────────────
     Then status {{expectedStatus}}
 {{#each assertions}}
-    And match response.{{field}} {{{operator}}}{{#if value}} {{{value}}}{{/if}}
+    And match response.{{field}} {{operator}} {{formatAssertionValue value operator}}
 {{/each}}
 
 {{#if enableDb}}
     # ── Estado DB DESPUÉS del request ──────────────────────────────
     * def dbAfter = DbUtils.queryOne("SELECT {{dbColumns}} FROM {{dbTable}} WHERE {{dbFilter}}")
     * karate.log('DB DESPUES: ' + dbAfter)
+
 {{#each dbAssertions}}
-    * match dbAfter.{{column}} == {{value}}
+    * match dbAfter.{{column}} == {{formatAssertionValue value '=='}}
 {{/each}}
 
 {{/if}}
@@ -80,7 +87,7 @@ Feature: {{featureName}}
     * def ocpEvidence = safeOcpEvidence()
     * if (ocpEvidence != null) karate.log('Pod: ' + ocpEvidence.podName)
     * if (ocpEvidence != null) karate.log(ocpEvidence.logContent)
-    * if (ocpEvidence == null) karate.log('INFO: Evidencia OCP omitida (sin acceso al cluster).')
+    * if (ocpEvidence == null) karate.log('INFO: Evidencia OCP omitida sin acceso al cluster.')
 
 {{/if}}
 {{/each}}
