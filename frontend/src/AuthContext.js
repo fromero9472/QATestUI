@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import axios from 'axios';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:3001';
+axios.defaults.withCredentials = true;
 
 // ── localStorage keys ──────────────────────────────────────────────────────────
 const K = {
@@ -10,7 +11,6 @@ const K = {
   APIKEY:         'qatestui_ai_apikey',          // legacy key (kept for migration)
   APIKEY_PREFIX:  'qatestui_ai_apikey_',         // per-provider: qatestui_ai_apikey_groq, etc.
   OLLAMA_URL:     'qatestui_ollama_url',
-  GITHUB_TOKEN:   'qatestui_github_token',
   GITHUB_USER:    'qatestui_github_user',
   COPILOT_MODELS: 'qatestui_copilot_models',
 };
@@ -71,7 +71,7 @@ export function AuthProvider({ children }) {
   const [apiKey, _setApiKey]         = useState(() => readApiKey(read(K.PROVIDER, 'groq')));
   const [ollamaUrl, _setOllamaUrl]   = useState(() => read(K.OLLAMA_URL, 'http://localhost:11434'));
 
-  const [githubToken, _setGithubToken] = useState(() => read(K.GITHUB_TOKEN, ''));
+  const [githubToken, _setGithubToken] = useState('');
   const [githubUser,  _setGithubUser]  = useState(() => read(K.GITHUB_USER, null));
 
   // copilot check
@@ -92,8 +92,6 @@ export function AuthProvider({ children }) {
 
   const setGithubToken = (v) => {
     _setGithubToken(v);
-    if (v) localStorage.setItem(K.GITHUB_TOKEN, v);
-    else   localStorage.removeItem(K.GITHUB_TOKEN);
   };
   const setGithubUser = (v) => {
     _setGithubUser(v);
@@ -103,17 +101,11 @@ export function AuthProvider({ children }) {
 
   // ── Handle GitHub OAuth callback from URL ─────────────────────────────────────
   useEffect(() => {
-    const params    = new URLSearchParams(window.location.search);
-    const token     = params.get('github_token');
-    const login     = params.get('github_login');
-    const name      = params.get('github_name');
-    const avatar    = params.get('github_avatar');
-    const authError = params.get('auth_error');
+    const params      = new URLSearchParams(window.location.search);
+    const authSuccess = params.get('auth_success');
+    const authError   = params.get('auth_error');
 
-    if (token) {
-      const user = { login, name, avatar };
-      setGithubToken(token);
-      setGithubUser(user);
+    if (authSuccess) {
       setAuthError('');
       // Restore target provider chosen before OAuth (copilot/github)
       const target = params.get('auth_target') || localStorage.getItem(K.PROVIDER) || 'copilot';
@@ -132,6 +124,20 @@ export function AuthProvider({ children }) {
       setAuthError(decoded);
       window.history.replaceState({}, '', window.location.pathname);
     }
+    axios.get(`${BACKEND_URL}/auth/session`, { withCredentials: true })
+      .then(({ data }) => {
+        if (data?.loggedIn) {
+          setGithubToken('session');
+          setGithubUser(data.user || null);
+        } else {
+          setGithubToken('');
+          setGithubUser(null);
+        }
+      })
+      .catch(() => {
+        setGithubToken('');
+        setGithubUser(null);
+      });
   // eslint-disable-next-line
   }, []);
 
@@ -143,12 +149,13 @@ export function AuthProvider({ children }) {
   // eslint-disable-next-line
   }, [githubToken, providerId]);
 
-  const checkCopilotAccess = useCallback(async (token) => {
+  const checkCopilotAccess = useCallback(async (token = '') => {
     setCopilotChecking(true);
     setCopilotStatus(null);
     setCopilotError('');
     try {
-      const { data } = await axios.post(`${BACKEND_URL}/copilot/check`, { githubToken: token }, { withCredentials: true });
+      const payload = token && token !== 'session' ? { githubToken: token } : {};
+      const { data } = await axios.post(`${BACKEND_URL}/copilot/check`, payload, { withCredentials: true });
       if (data.hasCopilot) {
         setCopilotStatus('ok');
         if (data.models?.length > 0) {
@@ -205,7 +212,6 @@ export function AuthProvider({ children }) {
       setCopilotStatus(null);
       setCopilotError('');
       localStorage.removeItem(K.COPILOT_MODELS);
-      localStorage.removeItem(K.GITHUB_TOKEN);
       localStorage.removeItem(K.GITHUB_USER);
     }
 
@@ -234,7 +240,6 @@ export function AuthProvider({ children }) {
     setCopilotChecking(false);
     setAuthError('');
     localStorage.removeItem(K.COPILOT_MODELS);
-    localStorage.removeItem(K.GITHUB_TOKEN);
     localStorage.removeItem(K.GITHUB_USER);
 
     // Marcar que el próximo login debe ser forzado
@@ -250,10 +255,9 @@ export function AuthProvider({ children }) {
   const buildAIPayload = useCallback((extra = {}) => {
     const payload = { provider: providerId, model, ...extra };
     if (currentProvider.authType === 'apikey' && apiKey) payload.apiKey = apiKey;
-    if (['github', 'copilot'].includes(providerId) && githubToken)  payload.apiKey = githubToken;
     if (providerId === 'ollama') payload.ollamaUrl = ollamaUrl;
     return payload;
-  }, [providerId, model, apiKey, githubToken, ollamaUrl, currentProvider]);
+  }, [providerId, model, apiKey, ollamaUrl, currentProvider]);
 
   return (
     <AuthContext.Provider value={{

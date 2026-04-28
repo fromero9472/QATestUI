@@ -71,7 +71,7 @@ function GitHubSessionWidget() {
         )}
         {showLogoutTip && (
           <div className="absolute top-full right-0 mt-2 w-72 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[11px] shadow-lg z-50">
-            <p className="font-semibold mb-1">✓ Sesión cerrada en QATestUI</p>
+            <p className="font-semibold mb-1">✓ Sesión cerrada en Karate Control</p>
             <p className="text-amber-300/80">Para cambiar de cuenta, cerrá sesión también en <strong>github.com</strong> antes de reconectar.</p>
           </div>
         )}
@@ -143,6 +143,7 @@ function AppInner() {
 
   useEffect(() => { applyTheme(theme); }, [theme]);
   const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark');
+  const isDark = theme === 'dark';
 
   useEffect(() => {
     const check = async () => {
@@ -254,18 +255,36 @@ function AppInner() {
     <div className="min-h-screen flex flex-col">
 
       {/* ── Navbar ── */}
-      <header className="sticky top-0 z-50 backdrop-blur-xl bg-[#0b0f1a]/80 border-b border-[#1e293b]">
+      <header
+        className="sticky top-0 z-50 backdrop-blur-xl border-b"
+        style={{
+          backgroundColor: isDark ? 'rgba(11,15,26,0.86)' : 'rgba(248,250,252,0.92)',
+          borderColor: isDark ? '#1e293b' : '#e2e8f0',
+        }}
+      >
         <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
           {/* Logo */}
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-600 to-blue-600 flex items-center justify-center shadow-lg shadow-violet-500/30">
-              <Zap size={18} className="text-white" />
+            <div
+              className="w-9 h-9 rounded-xl flex items-center justify-center"
+              style={{
+                backgroundColor: isDark ? '#111827' : '#ffffff',
+                border: `1px solid ${isDark ? '#334155' : '#cbd5e1'}`,
+                boxShadow: isDark ? '0 10px 22px rgba(0,0,0,0.28)' : '0 8px 18px rgba(15,23,42,0.08)',
+              }}
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
+                <path d="M5 18L16.5 6.5" stroke={isDark ? '#e2e8f0' : '#334155'} strokeWidth="1.7" strokeLinecap="round" />
+                <path d="M15 5.4L18.6 9" stroke={isDark ? '#e2e8f0' : '#334155'} strokeWidth="1.7" strokeLinecap="round" />
+                <path d="M4.4 19.6L7.3 16.7" stroke={isDark ? '#94a3b8' : '#64748b'} strokeWidth="1.7" strokeLinecap="round" />
+                <path d="M17.8 14.4L19.2 15.8L21.8 13.2" stroke={isDark ? '#a78bfa' : '#7c3aed'} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
             </div>
             <div className="flex items-baseline gap-2">
-              <span className="text-lg font-bold bg-gradient-to-r from-violet-400 to-blue-400 bg-clip-text text-transparent">
-                QATestUI
+              <span className="text-lg font-bold" style={{ color: isDark ? '#f8fafc' : '#0f172a' }}>
+                Karate Control
               </span>
-              <span className="text-xs text-slate-500 font-medium">Karate Generator</span>
+              <span className="text-xs font-medium" style={{ color: isDark ? '#94a3b8' : '#64748b' }}>Katana QA Runner</span>
             </div>
           </div>
 
@@ -319,7 +338,9 @@ function AppInner() {
             onClick={() => setActiveTab('generator')}
             className={`flex items-center gap-2 py-2 px-5 rounded-lg text-xs font-semibold transition-all
               ${activeTab === 'generator'
-                ? 'bg-violet-600 text-white shadow shadow-violet-500/30'
+                ? (isDark
+                    ? 'bg-[#1e293b] text-white border border-[#334155] shadow shadow-black/20'
+                    : 'bg-[#334155] text-[#f8fafc] border border-[#334155] shadow shadow-slate-300/50')
                 : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Zap size={13} /> Generador
@@ -328,7 +349,9 @@ function AppInner() {
             onClick={() => { setActiveTab('runner'); setOutput(null); }}
             className={`flex items-center gap-2 py-2 px-5 rounded-lg text-xs font-semibold transition-all
               ${activeTab === 'runner'
-                ? 'bg-violet-600 text-white shadow shadow-violet-500/30'
+                ? (isDark
+                    ? 'bg-[#1e293b] text-white border border-[#334155] shadow shadow-black/20'
+                    : 'bg-[#334155] text-[#f8fafc] border border-[#334155] shadow shadow-slate-300/50')
                 : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Play size={13} /> Feature Runner
@@ -390,8 +413,8 @@ function AppInner() {
       </main>
 
       {/* ── Footer ── */}
-      <footer className="border-t border-[#1e293b] py-6 text-center text-slate-600 text-xs">
-        QATestUI © 2026 — Generador automático de tests Karate para equipos de QA
+      <footer className="border-t border-[#334155] py-6 text-center text-slate-500 text-xs">
+        Karate Control © 2026 - Generador automático de tests Karate para equipos de QA
       </footer>
     </div>
   );

@@ -1,7 +1,8 @@
 Feature: {{featureName}}
 
   Background:
-    * url '{{baseUrl}}'
+    * def _featureBaseUrl = '{{baseUrl}}'
+    * url _featureBaseUrl != '' ? _featureBaseUrl : baseUrl
 {{#if enableOcp}}
     * def OCP_API   = 'https://api.osen02.claro.amx:6443'
     * def OCP_TOKEN = '{{ocpToken}}'

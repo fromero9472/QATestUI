@@ -14,6 +14,12 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3001;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+if (!process.env.SESSION_SECRET) {
+  console.warn('[Security] SESSION_SECRET no configurado. Usando secreto efimero para esta sesion.');
+}
 
 // ─── Groq client (default, using env key) ─────────────────────────────────────
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -47,6 +53,10 @@ async function getCopilotToken(githubToken) {
   const expiresAt = (data.expires_at || Math.floor(Date.now() / 1000) + 1800) * 1000;
   copilotTokenCache.set(githubToken, { copilotToken: data.token, expiresAt });
   return data.token;
+}
+
+function getGithubTokenFromSession(req) {
+  return req?.session?.githubAuth?.accessToken || '';
 }
 
 // ─── Multi-provider AI abstraction ────────────────────────────────────────────
@@ -271,12 +281,17 @@ function cleanJSON(jsonStr) {
 
 // ─── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors({ origin: FRONTEND_URL, credentials: true }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'qatestui-secret-changeme',
+  secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: false, maxAge: 8 * 60 * 60 * 1000 }, // 8h
+  cookie: {
+    secure: IS_PROD,
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge: 8 * 60 * 60 * 1000, // 8h
+  },
 }));
 
 // ─── GitHub OAuth ──────────────────────────────────────────────────────────────
@@ -364,11 +379,17 @@ app.get('/auth/github/callback', async (req, res) => {
 
     // Pass token + user info back to frontend via redirect with query params
     // (token stored client-side in localStorage — never persisted on server)
+    req.session.githubAuth = {
+      accessToken,
+      user: {
+        login: user.login,
+        name: user.name || user.login,
+        avatar: user.avatar_url || '',
+      },
+    };
+
     const params = new URLSearchParams({
-      github_token: accessToken,
-      github_login: user.login,
-      github_name:  user.name || user.login,
-      github_avatar: user.avatar_url || '',
+      auth_success: '1',
       auth_target: authTarget,
     });
     res.redirect(`${FRONTEND_URL}?${params}`);
@@ -379,13 +400,26 @@ app.get('/auth/github/callback', async (req, res) => {
 });
 
 app.get('/auth/logout', (req, res) => {
+  delete req.session.githubAuth;
+  delete req.session.githubOauthState;
   req.session.destroy();
   res.json({ success: true });
 });
 
+app.get('/auth/session', (req, res) => {
+  const auth = req.session.githubAuth;
+  if (!auth?.accessToken) {
+    return res.json({ loggedIn: false });
+  }
+  return res.json({
+    loggedIn: true,
+    user: auth.user || null,
+  });
+});
+
 // ─── Copilot: verificar suscripción y listar modelos disponibles ───────────────
 app.post('/copilot/check', async (req, res) => {
-  const { githubToken } = req.body;
+  const githubToken = req.body?.githubToken || getGithubTokenFromSession(req);
   if (!githubToken) return res.status(400).json({ hasCopilot: false, error: 'Token requerido' });
 
   try {
@@ -647,11 +681,19 @@ const postProcess = (parsed, originalText) => {
   const tableMatches = [...text.matchAll(/\b([A-Z][A-Z0-9_]+\.[A-Z][A-Z0-9_]+)\b/g)].map(m => m[1]);
   const uniqueTables  = [...new Set(tableMatches)];
 
+  // Explicit user overrides for DB behavior in refine prompts
+  const globalDbDisable = /\b(no validar|sin|omitir|quitar|deshabilitar)\b[\s\S]{0,40}\b(db|base de datos|database)\b/i.test(text);
+  const perScenarioDbDisable = new Set();
+  for (const m of text.matchAll(/escenario\s*(\d+)[\s\S]{0,60}\b(no validar|sin|omitir|quitar|deshabilitar)\b[\s\S]{0,30}\b(db|base de datos|database)\b/gi)) {
+    const idx = Number(m[1]) - 1;
+    if (Number.isFinite(idx) && idx >= 0) perScenarioDbDisable.add(idx);
+  }
+
   // ── 5. enableDb override ──────────────────────────────────────────────────
   const dbKeywords = /tabla|base de datos|\bDB\b|database|validar.*base|verificar.*base|HISTORY|batch|proceso batch|se guarda|se almacena|se mueve|se copia|registros?/i;
   const needsDb    = dbKeywords.test(text) || uniqueTables.length > 0;
 
-  if (needsDb) {
+  if (!globalDbDisable && needsDb) {
     parsed.scenarios = parsed.scenarios.map((s, idx) => {
       const updated = { ...s, enableDb: true };
 
@@ -671,11 +713,38 @@ const postProcess = (parsed, originalText) => {
     });
   }
 
+  // Final pass: respect explicit "no DB" instructions from user refine prompt
+  if (globalDbDisable) {
+    parsed.scenarios = parsed.scenarios.map((s) => ({
+      ...s,
+      enableDb: false,
+      dbTable: '',
+      dbColumns: '',
+      dbFilter: '',
+      dbAssertions: [],
+    }));
+  } else if (perScenarioDbDisable.size > 0) {
+    parsed.scenarios = parsed.scenarios.map((s, idx) => {
+      if (!perScenarioDbDisable.has(idx)) return s;
+      return {
+        ...s,
+        enableDb: false,
+        dbTable: '',
+        dbColumns: '',
+        dbFilter: '',
+        dbAssertions: [],
+      };
+    });
+  }
+
   return parsed;
 };
 
 app.post('/parse-criteria', async (req, res) => {
   const { text, provider = 'groq', apiKey, model, ollamaUrl } = req.body;
+  const effectiveApiKey = ['github', 'copilot'].includes(provider)
+    ? (getGithubTokenFromSession(req) || apiKey)
+    : apiKey;
   if (!text || !text.trim()) {
     return res.status(400).json({ success: false, errors: ['El texto no puede estar vacío'] });
   }
@@ -696,7 +765,7 @@ app.post('/parse-criteria', async (req, res) => {
 
   try {
     const raw = await callAI({
-      provider, apiKey, model, ollamaUrl,
+      provider, apiKey: effectiveApiKey, model, ollamaUrl,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user',   content: text }
@@ -760,6 +829,13 @@ app.post('/parse-criteria', async (req, res) => {
 
 // ─── Shared normalization helper ──────────────────────────────────────────────
 const OPS_WITHOUT_VALUE = ['!= null', '== null', '== true', '== false'];
+const SAFE_RESPONSE_PATH = /^[A-Za-z_][A-Za-z0-9_.$[\]-]*$/;
+const SAFE_DB_TABLE = /^[A-Za-z0-9_.]+$/;
+const SAFE_DB_ASSERT_COL = /^[A-Za-z_][A-Za-z0-9_.$[\]-]*$/;
+const SAFE_DB_COLUMNS = /^[A-Za-z0-9_.*, ]+$/;
+
+const sanitizeQuoted = (str = '') => String(str).replace(/"/g, '\\"').replace(/\r?\n/g, ' ').trim();
+const sanitizeBody = (str = '') => String(str).replace(/"""/g, '\\"\\"\\"').trim();
 
 /**
  * Returns true when a raw assertion value is a plain string literal that
@@ -778,25 +854,32 @@ const normalizeScenarios = (scenarios) =>
   scenarios.map((s) => ({
     ...s,
     method:  s.method.toUpperCase(),
-    params:  (s.params  || []).filter(p => p.key && p.key.trim()),
-    headers: (s.headers || []).filter(h => h.key && h.key.trim()),
-    body:    s.body && s.body.trim() ? s.body.trim() : null,
+    params:  (s.params  || [])
+      .filter(p => p.key && p.key.trim())
+      .map(p => ({ ...p, key: p.key.trim(), value: sanitizeQuoted(p.value || '') })),
+    headers: (s.headers || [])
+      .filter(h => h.key && h.key.trim())
+      .map(h => ({ ...h, key: h.key.trim(), value: sanitizeQuoted(h.value || '') })),
+    body:    s.body && s.body.trim() ? sanitizeBody(s.body) : null,
     // DB fields
     enableDb:    !!s.enableDb,
-    dbTable:     s.dbTable    || '',
-    dbColumns:   s.dbColumns  || '',
-    dbFilter:    s.dbFilter   || '',
-    dbAssertions: (s.dbAssertions || []).filter(a => a.column && a.column.trim()),
+    dbTable:     SAFE_DB_TABLE.test((s.dbTable || '').trim()) ? s.dbTable.trim() : '',
+    dbColumns:   SAFE_DB_COLUMNS.test((s.dbColumns || '').trim()) ? s.dbColumns.trim() : '',
+    dbFilter:    sanitizeQuoted(s.dbFilter || ''),
+    dbAssertions: (s.dbAssertions || [])
+      .filter(a => a.column && a.column.trim() && SAFE_DB_ASSERT_COL.test(a.column.trim()))
+      .map(a => ({ ...a, column: a.column.trim(), value: sanitizeQuoted(a.value || '') })),
     // OCP fields
     enableOcpEvidence: !!s.enableOcpEvidence,
     assertions: (s.assertions || [])
-      .filter(a => a.field && a.field.trim())
+      .filter(a => a.field && a.field.trim() && SAFE_RESPONSE_PATH.test(a.field.trim()))
       .map(a => {
-        const rawValue = OPS_WITHOUT_VALUE.includes(a.operator) ? null : (a.value || '');
+        const operator = VALID_OPERATORS.includes(a.operator) ? a.operator : '!= null';
+        const rawValue = OPS_WITHOUT_VALUE.includes(operator) ? null : (a.value || '');
         const formattedValue = rawValue && needsQuotes(rawValue) ? `'${rawValue}'` : rawValue;
         return {
           field:    a.field.trim(),
-          operator: a.operator || '!= null',
+          operator,
           value:    formattedValue,
         };
       }),
@@ -868,6 +951,9 @@ app.post('/confluence-test', async (req, res) => {
   if (!baseUrl || !token) {
     return res.status(400).json({ success: false, error: 'Faltan baseUrl y token' });
   }
+  if (authType === 'basic' && !email) {
+    return res.status(400).json({ success: false, error: 'Para Basic (Cloud) debés ingresar Email + API Token.' });
+  }
 
   try {
     const headers = { 'Content-Type': 'application/json' };
@@ -893,7 +979,15 @@ app.post('/confluence-test', async (req, res) => {
       return res.status(503).json({ success: false, error: '🔌 Conexión rechazada. El servidor Confluence no está accesible desde esta red.' });
     if (code === 'ETIMEDOUT' || code === 'ECONNABORTED')
       return res.status(503).json({ success: false, error: '⏱ Tiempo de espera agotado. Verificá la VPN y la Base URL.' });
-    if (status === 401) return res.status(401).json({ success: false, error: 'Credenciales inválidas (401 Unauthorized)' });
+    if (status === 401) {
+      const isCloudUrl = /atlassian\.net/i.test(baseUrl);
+      const hint = authType === 'basic'
+        ? (isCloudUrl
+          ? '401. Verificá Email + API Token de Atlassian Cloud.'
+          : '401. Esa URL parece Server/Data Center. Probá "Bearer Token" en lugar de Basic.')
+        : '401. Verificá que el Personal Access Token (Bearer) sea válido y tenga permisos.';
+      return res.status(401).json({ success: false, error: `Credenciales inválidas. ${hint}` });
+    }
     if (status === 403) return res.status(403).json({ success: false, error: 'Sin permisos (403 Forbidden)' });
     if (status === 404) return res.status(404).json({ success: false, error: 'URL no encontrada (404). Verificá la Base URL' });
     return res.status(500).json({ success: false, error: `No se pudo conectar: ${err.message}` });
@@ -903,8 +997,14 @@ app.post('/confluence-test', async (req, res) => {
 // ─── POST /confluence-fetch ────────────────────────────────────────────────────
 app.post('/confluence-fetch', async (req, res) => {
   const { baseUrl, email, token, authType, pageUrl, provider = 'groq', apiKey, model, ollamaUrl } = req.body;
+  const effectiveApiKey = ['github', 'copilot'].includes(provider)
+    ? (getGithubTokenFromSession(req) || apiKey)
+    : apiKey;
   if (!baseUrl || !token || !pageUrl) {
     return res.status(400).json({ success: false, error: 'Faltan parámetros' });
+  }
+  if (authType === 'basic' && !email) {
+    return res.status(400).json({ success: false, error: 'Para Basic (Cloud) debés ingresar Email + API Token.' });
   }
 
   try {
@@ -976,7 +1076,7 @@ app.post('/confluence-fetch', async (req, res) => {
 
     // Llamar a la IA seleccionada (soporta Groq, OpenAI, GitHub, Copilot, Ollama)
     const raw = await callAI({
-      provider, apiKey, model, ollamaUrl,
+      provider, apiKey: effectiveApiKey, model, ollamaUrl,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user',   content: fullText },
@@ -1029,7 +1129,15 @@ app.post('/confluence-fetch', async (req, res) => {
       return res.status(503).json({ success: false, error: '🔌 Conexión rechazada. El servidor Confluence no está accesible desde esta red.' });
     if (code === 'ETIMEDOUT' || code === 'ECONNABORTED')
       return res.status(503).json({ success: false, error: '⏱ Tiempo de espera agotado. Verificá la VPN y la Base URL.' });
-    if (status === 401) return res.status(401).json({ success: false, error: 'Credenciales inválidas (401)' });
+    if (status === 401) {
+      const isCloudUrl = /atlassian\.net/i.test(baseUrl);
+      const hint = authType === 'basic'
+        ? (isCloudUrl
+          ? '401. Verificá Email + API Token de Atlassian Cloud.'
+          : '401. Esa URL parece Server/Data Center. Probá "Bearer Token" en lugar de Basic.')
+        : '401. Verificá que el Personal Access Token (Bearer) sea válido y tenga permisos.';
+      return res.status(401).json({ success: false, error: `Credenciales inválidas. ${hint}` });
+    }
     if (status === 403) return res.status(403).json({ success: false, error: 'Sin permisos (403)' });
     return res.status(500).json({ success: false, error: `Error: ${err.message}` });
   }
@@ -1039,6 +1147,9 @@ app.post('/confluence-fetch', async (req, res) => {
 // Responde preguntas sobre el contenido de la HU y, si aplica, sugiere cambios
 app.post('/confluence-ask', async (req, res) => {
   const { rawText, question, provider = 'groq', apiKey, model, ollamaUrl } = req.body;
+  const effectiveApiKey = ['github', 'copilot'].includes(provider)
+    ? (getGithubTokenFromSession(req) || apiKey)
+    : apiKey;
   if (!rawText || !question) {
     return res.status(400).json({ success: false, error: 'Faltan rawText o question' });
   }
@@ -1068,7 +1179,7 @@ Si la respuesta es no, no sugerir nada.`;
     const combinedText = `CONTENIDO DE LA HU:\n${rawText}\n\nPREGUNTA DEL USUARIO:\n${question}`;
 
     const raw = await callAI({
-      provider, apiKey, model, ollamaUrl,
+      provider, apiKey: effectiveApiKey, model, ollamaUrl,
       messages: [
         { role: 'system', content: ASK_PROMPT },
         { role: 'user',   content: combinedText },
@@ -1118,6 +1229,9 @@ Si la respuesta es no, no sugerir nada.`;
 // y vuelve a llamar a la IA para mejorar el análisis
 app.post('/confluence-refine', async (req, res) => {
   const { rawText, refinementPrompt, provider = 'groq', apiKey, model, ollamaUrl } = req.body;
+  const effectiveApiKey = ['github', 'copilot'].includes(provider)
+    ? (getGithubTokenFromSession(req) || apiKey)
+    : apiKey;
   if (!rawText || !refinementPrompt) {
     return res.status(400).json({ success: false, error: 'Faltan rawText o refinementPrompt' });
   }
@@ -1131,7 +1245,7 @@ INSTRUCCIONES ADICIONALES DEL USUARIO:
 ${refinementPrompt}`;
 
     const raw = await callAI({
-      provider, apiKey, model, ollamaUrl,
+      provider, apiKey: effectiveApiKey, model, ollamaUrl,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user',   content: combinedText },
@@ -1177,10 +1291,14 @@ ${refinementPrompt}`;
 const RUNNER_AGENT_URL   = process.env.RUNNER_AGENT_URL   || 'http://localhost:4000';
 const RUNNER_AGENT_TOKEN = process.env.RUNNER_AGENT_TOKEN || 'local-dev-token';
 
-const agentHeaders = () => ({
-  'Content-Type':  'application/json',
-  'x-agent-token': RUNNER_AGENT_TOKEN,
-});
+const agentHeaders = () => {
+  const headers = {
+    'Content-Type':  'application/json',
+    'x-agent-token': RUNNER_AGENT_TOKEN,
+  };
+  console.log('[Proxy] Enviando petición al Runner Agent');
+  return headers;
+};
 
 // GET /runner/health — estado del agente
 app.get('/runner/health', async (req, res) => {
@@ -1266,6 +1384,9 @@ app.delete('/runner/features', async (req, res) => {
 // POST /runner/analyze — analiza el output de Maven/Karate con IA
 app.post('/runner/analyze', async (req, res) => {
   const { logs, featureName, exitCode, summary, provider = 'groq', apiKey, model, ollamaUrl } = req.body;
+  const effectiveApiKey = ['github', 'copilot'].includes(provider)
+    ? (getGithubTokenFromSession(req) || apiKey)
+    : apiKey;
   if (!logs || !logs.length) {
     return res.status(400).json({ success: false, error: 'No hay logs para analizar' });
   }
@@ -1300,7 +1421,7 @@ REGLAS:
 
   try {
     const raw = await callAI({
-      provider, apiKey, model, ollamaUrl,
+      provider, apiKey: effectiveApiKey, model, ollamaUrl,
       messages: [
         { role: 'system', content: RUNNER_PROMPT },
         { role: 'user', content: `Feature: ${featureName || 'todos'}\nResultado: ${status}${summaryText}\n\nLOGS:\n${logsText.slice(0, 8000)}` },

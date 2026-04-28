@@ -22,10 +22,13 @@ const OP_LABELS = {
 
 const REFINE_SUGGESTIONS = [
   'Separalo en 2 escenarios: happy path y error',
-  'El endpoint es POST, no GET. Corregí el método',
+  'El endpoint es POST, no GET. Corregi el método',
   'Agregá un escenario de error con status 400',
-  'Habilitá evidencia OCP para todos los escenarios',
+  'Habilita evidencia OCP para todos los escenarios',
   'Agregá validación de base de datos',
+  'En el escenario 1 no validar DB',
+  'En el escenario 2 validar DB y usar tabla CPAY_CREDIT_PROFILE.HISTORY_CREDIT_PROFILE',
+  'En el escenario 2 cambiar WHERE a ID = 12345',
 ];
 
 const ASK_SUGGESTIONS = [
@@ -45,23 +48,23 @@ const METHOD_COLORS = {
   DELETE: 'bg-red-500/10     text-red-400     border-red-500/20',
 };
 
-// ── Helper: check if AI is ready to use ──────────────────────────────────────
+// Helper: check if AI is ready to use
 function useAIReady() {
   const { providerId, apiKey, currentProvider, isGitHubLoggedIn, copilotStatus, copilotChecking } = useAuth();
   if (['github', 'copilot'].includes(providerId)) {
-    if (!isGitHubLoggedIn) return { ready: false, reason: 'Necesitás conectar tu cuenta de GitHub para usar este proveedor.' };
-    if (providerId === 'copilot' && copilotStatus === 'error') return { ready: false, reason: 'Tu cuenta no tiene suscripción activa de GitHub Copilot. Usá GitHub Models (gratis).' };
+    if (!isGitHubLoggedIn) return { ready: false, reason: 'Necesitas conectar tu cuenta de GitHub para usar este proveedor.' };
+    if (providerId === 'copilot' && copilotStatus === 'error') return { ready: false, reason: 'Tu cuenta no tiene suscripción activa de GitHub Copilot. Usa GitHub Models (gratis).' };
     return { ready: true };
   }
   if (currentProvider?.authType === 'apikey' && !apiKey?.trim()) {
-    return { ready: false, reason: `Necesitás ingresar tu API Key de ${currentProvider.label} en el panel de Proveedor de IA.` };
+    return { ready: false, reason: `Necesitas ingresar tu API Key de ${currentProvider.label} en el panel de Proveedor de IA.` };
   }
   return { ready: true };
 }
 
-// ─────────────────────────────────────────────────────────────────────
+// ---
 // Review Modal
-// ─────────────────────────────────────────────────────────────────────
+// ---
 function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
   const { buildAIPayload, currentProvider } = useAuth();
   const [edited, setEdited]               = useState(() => JSON.parse(JSON.stringify(result)));
@@ -88,6 +91,25 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
     setEdited(prev => { const s = [...prev.scenarios]; s[si] = { ...s[si], assertions: s[si].assertions.filter((_, i) => i !== ai) }; return { ...prev, scenarios: s }; });
   const addAssertion = (si) =>
     setEdited(prev => { const s = [...prev.scenarios]; s[si] = { ...s[si], assertions: [...s[si].assertions, { field: '', operator: '!= null', value: '' }] }; return { ...prev, scenarios: s }; });
+  const clearDbForScenario = (si) =>
+    setEdited(prev => {
+      const s = [...prev.scenarios];
+      s[si] = { ...s[si], enableDb: false, dbTable: '', dbColumns: '', dbFilter: '', dbAssertions: [] };
+      return { ...prev, scenarios: s };
+    });
+  const enableDbForScenario = (si) =>
+    setEdited(prev => {
+      const s = [...prev.scenarios];
+      s[si] = {
+        ...s[si],
+        enableDb: true,
+        dbTable: s[si].dbTable || '',
+        dbColumns: s[si].dbColumns || '*',
+        dbFilter: s[si].dbFilter || '',
+        dbAssertions: Array.isArray(s[si].dbAssertions) ? s[si].dbAssertions : [],
+      };
+      return { ...prev, scenarios: s };
+    });
 
   const handleRefine = async () => {
     if (!refinePrompt.trim()) return;
@@ -238,12 +260,12 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
 
                   {askAnswer && (
                     <div className="p-4 rounded-xl bg-violet-500/5 border border-violet-500/20 space-y-3">
-                      <p className="text-xs font-semibold text-violet-400">🤖 Respuesta de {providerLabel}</p>
+                      <p className="text-xs font-semibold text-violet-400">Respuesta de {providerLabel}</p>
                       <p className="text-sm text-slate-300">{askAnswer}</p>
                       {askSuggestion && (
                         <div className="flex items-center justify-between pt-3 border-t border-violet-500/20">
                           <div>
-                            <p className="text-xs font-semibold text-violet-300">💡 Sugerencia disponible</p>
+                            <p className="text-xs font-semibold text-violet-300">Sugerencia disponible</p>
                             <p className="text-xs text-slate-400">{askSuggestionLabel}</p>
                           </div>
                           <div className="flex gap-2">
@@ -275,7 +297,10 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
                   </div>
                   <textarea className="form-control resize-none" rows={5} value={refinePrompt}
                     onChange={e => setRefinePrompt(e.target.value)}
-                    placeholder={`Ej:\n- "Separalo en 2 escenarios"\n- "El método debe ser POST"`} />
+                    placeholder={`Ej:
+- "En el escenario 1 no validar DB"
+- "En el escenario 3 usar tabla CPAY_CREDIT_PROFILE.HISTORY_CREDIT_PROFILE"
+- "En el escenario 3 cambiar WHERE a ID = 12345"`} />
                   {refineError && <p className="text-xs text-red-400 flex items-center gap-1"><XCircle size={13} />{refineError}</p>}
                   <div className="flex gap-2">
                     <button type="button" className="btn btn--primary" onClick={handleRefine} disabled={refineLoading || !refinePrompt.trim()}>
@@ -286,7 +311,7 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
                     )}
                   </div>
                   {history.length > 0 && (
-                    <p className="text-xs text-emerald-400">✅ Re-análisis aplicado {history.length} vez{history.length > 1 ? 'es' : ''}. Revisá el <strong>Preview editable</strong>.</p>
+                    <p className="text-xs text-emerald-400">a Re-análisis aplicado {history.length} vez{history.length > 1 ? 'es' : ''}. Revisa el <strong>Preview editable</strong>.</p>
                   )}
                 </>
               )}
@@ -298,7 +323,7 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
             <div className="space-y-4">
               {/* Feature global fields */}
               <div className="card !mb-0">
-                <p className="card__title">📄 Feature</p>
+                <p className="card__title">Feature</p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
                   <div>
                     <label className="block text-xs text-slate-400 mb-1">Feature Name</label>
@@ -321,8 +346,8 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Escenario {si + 1}</span>
                     <span className={`px-2 py-0.5 rounded-full text-xs font-bold border ${METHOD_COLORS[s.method] || METHOD_COLORS.GET}`}>{s.method || 'GET'}</span>
-                    {s.enableDb && <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">🗄 DB</span>}
-                    {s.enableOcpEvidence && <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-red-500/10 text-red-400 border border-red-500/20">🔴 OCP</span>}
+                    {s.enableDb && <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">DB</span>}
+                    {s.enableOcpEvidence && <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-red-500/10 text-red-400 border border-red-500/20">OCP</span>}
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -338,8 +363,8 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
                   {/* Assertions */}
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">✅ Assertions</p>
-                      <button type="button" className="btn btn--ghost btn--sm" onClick={() => addAssertion(si)}>+ Agregar</button>
+                      <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Assertions</p>
+                      <button type="button" className="btn btn--ghost btn--sm" onClick={() => addAssertion(si)}>+ Agregár</button>
                     </div>
                     {s.assertions?.length === 0 && <p className="text-xs text-slate-600 italic">Sin assertions detectadas.</p>}
                     <div className="space-y-2">
@@ -359,15 +384,59 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
                     </div>
                   </div>
 
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Base de datos</p>
+                    {s.enableDb ? (
+                      <button type="button" className="btn btn--danger-ghost btn--sm" onClick={() => clearDbForScenario(si)}>
+                        <X size={13} /> Quitar DB
+                      </button>
+                    ) : (
+                      <button type="button" className="btn btn--ghost btn--sm" onClick={() => enableDbForScenario(si)}>
+                        + Agregár DB
+                      </button>
+                    )}
+                  </div>
+
                   {s.enableDb && (
-                    <div className="px-3 py-2 rounded-xl bg-cyan-500/5 border border-cyan-500/20 text-xs text-cyan-400">
-                      🗄 DB: <strong>{s.dbTable || 'tabla no detectada'}</strong>
-                      {s.dbFilter && <span> — WHERE {s.dbFilter}</span>}
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-1">Tabla</label>
+                          <input
+                            className="form-control !py-1.5 !text-xs"
+                            placeholder="SCHEMA.TABLA"
+                            value={s.dbTable || ''}
+                            onChange={e => setScenarioField(si, 'dbTable', e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-1">Columnas</label>
+                          <input
+                            className="form-control !py-1.5 !text-xs"
+                            placeholder="*"
+                            value={s.dbColumns || ''}
+                            onChange={e => setScenarioField(si, 'dbColumns', e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-1">WHERE</label>
+                          <input
+                            className="form-control !py-1.5 !text-xs"
+                            placeholder="ID = 12345"
+                            value={s.dbFilter || ''}
+                            onChange={e => setScenarioField(si, 'dbFilter', e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div className="px-3 py-2 rounded-xl bg-cyan-500/5 border border-cyan-500/20 text-xs text-cyan-400">
+                        DB: <strong>{s.dbTable || 'tabla no detectada'}</strong>
+                        {s.dbFilter && <span> - WHERE {s.dbFilter}</span>}
+                      </div>
                     </div>
                   )}
                   {s.detectedBody && (
                     <div>
-                      <p className="text-xs font-semibold text-slate-400 mb-1">📦 Request body</p>
+                      <p className="text-xs font-semibold text-slate-400 mb-1">Request body</p>
                       <pre className="text-xs bg-[#0b0f1a] rounded-xl p-3 text-slate-300 overflow-auto border border-[#1e293b]">{s.detectedBody}</pre>
                     </div>
                   )}
@@ -406,9 +475,9 @@ function ReviewModal({ result, pageTitle, rawText, onAccept, onReject }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────
+// ---
 // Main ConfluenceImport
-// ─────────────────────────────────────────────────────────────────────
+// ---
 export default function ConfluenceImport({ onApply }) {
   const { buildAIPayload, providerId, loginWithGitHub, isGitHubLoggedIn, githubUser, currentProvider } = useAuth();
   const { ready: isAIReady, reason: notReadyReason } = useAIReady();
@@ -526,14 +595,14 @@ export default function ConfluenceImport({ onApply }) {
             {/* Credenciales */}
             <div>
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                🔐 Credenciales
+                Credenciales
               </p>
               <div className="space-y-3">
                 <div>
                   <label className="block text-xs text-slate-400 mb-1.5">Tipo de autenticación</label>
                   <select className="form-control" value={authType} onChange={e => setAuthType(e.target.value)}>
-                    <option value="basic">Basic (Email + API Token) — Confluence Cloud</option>
-                    <option value="bearer">Bearer Token — Confluence Server/Data Center</option>
+                    <option value="basic">Basic (Email + API Token) a Confluence Cloud</option>
+                    <option value="bearer">Bearer Token a Confluence Server/Data Center</option>
                   </select>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -580,7 +649,7 @@ export default function ConfluenceImport({ onApply }) {
 
             {/* Importar HU */}
             <div className="border-t border-[#1e293b] pt-5">
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">📄 Historia de Usuario</p>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Historia de usuario</p>
               <div className="flex gap-2">
                 <input className="form-control flex-1"
                   placeholder="https://confluence.empresa.com/pages/viewpage.action?pageId=123456"

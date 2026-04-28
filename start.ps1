@@ -2,7 +2,7 @@
 # Uso: .\start.ps1  [-RunnerAgentPath "ruta\al\runner-agent"]
 
 param(
-  [string]$RunnerAgentPath = "C:\Users\$env:USERNAME\Desktop\Claro\TestQA\runner-agent"
+  [string]$RunnerAgentPath = "C:\Users\$env:USERNAME\Desktop\Claro\KarateTest\TestQA\runner-agent"
 )
 
 $root = $PSScriptRoot

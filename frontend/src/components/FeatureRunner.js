@@ -17,15 +17,33 @@ const DEFAULT_ENVS = [
   { id: 'prod', label: 'prod', baseUrl: 'https://credit-profile-claropay-ar-prod.apps.osen02.claro.amx' },
 ];
 
+function normalizeEnv(item = {}) {
+  const label = String(item.label || item.id || '').trim();
+  const id = String(item.id || label.toLowerCase().replace(/\s+/g, '-')).trim();
+  const defaultBaseUrl = DEFAULT_ENVS.find((e) => e.id === id)?.baseUrl || '';
+  return {
+    id,
+    label: label || id,
+    baseUrl: String(item.baseUrl || defaultBaseUrl).trim(),
+  };
+}
+
+function normalizeEnvs(input) {
+  const source = Array.isArray(input) && input.length ? input : DEFAULT_ENVS;
+  return source
+    .map((item) => normalizeEnv(item))
+    .filter((item) => item.id);
+}
+
 function loadEnvs() {
   try {
     const saved = localStorage.getItem(ENV_STORAGE_KEY);
-    if (saved) return JSON.parse(saved);
+    if (saved) return normalizeEnvs(JSON.parse(saved));
   } catch {}
-  return DEFAULT_ENVS;
+  return normalizeEnvs(DEFAULT_ENVS);
 }
 function saveEnvs(envs) {
-  localStorage.setItem(ENV_STORAGE_KEY, JSON.stringify(envs));
+  localStorage.setItem(ENV_STORAGE_KEY, JSON.stringify(normalizeEnvs(envs)));
 }
 
 function loadRunnerProperties() {
@@ -42,7 +60,62 @@ function loadRunnerProperties() {
   return { global: '{}', perFeature: {} };
 }
 
-// â”€â”€â”€ AI Provider mini-selector â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function generateKarateFeature(form) {
+  const safe = (v = '') => String(v).replace(/\r?\n/g, ' ').trim();
+  const featureName = safe(form?.featureName || 'FeatureImportado');
+  const endpoint = safe(form?.endpoint || '/');
+  const baseUrl = safe(form?.baseUrl || '');
+  const scenarios = Array.isArray(form?.scenarios) ? form.scenarios : [];
+
+  const lines = [
+    `Feature: ${featureName}`,
+    '',
+    '  Background:',
+    `    * def _featureBaseUrl = '${baseUrl}'`,
+    '    * url _featureBaseUrl != \'\' ? _featureBaseUrl : baseUrl',
+    '',
+  ];
+
+  scenarios.forEach((s, idx) => {
+    const method = safe((s?.method || 'GET').toUpperCase());
+    const name = safe(s?.name || `Escenario ${idx + 1}`);
+    const expectedStatus = Number(s?.expectedStatus || 200);
+    lines.push(`  Scenario: ${name}`);
+    lines.push(`    Given path '${endpoint}'`);
+
+    (s?.params || []).forEach((p) => {
+      if (p?.key) lines.push(`    And param ${safe(p.key)} = '${safe(p.value)}'`);
+    });
+    (s?.headers || []).forEach((h) => {
+      if (h?.key) lines.push(`    And header ${safe(h.key)} = '${safe(h.value)}'`);
+    });
+
+    const body = (s?.body || '').trim();
+    if (body) {
+      lines.push('    And request');
+      lines.push('    """');
+      lines.push(body);
+      lines.push('    """');
+    }
+
+    lines.push(`    When method ${method}`);
+    lines.push(`    Then status ${expectedStatus}`);
+    (s?.assertions || []).forEach((a) => {
+      if (!a?.field) return;
+      const op = safe(a.operator || '!= null');
+      const value = (a?.value || '').trim();
+      lines.push(value
+        ? `    And match response.${safe(a.field)} ${op} ${value}`
+        : `    And match response.${safe(a.field)} ${op}`
+      );
+    });
+    lines.push('');
+  });
+
+  return lines.join('\n');
+}
+
+// // AI provider mini-selector
 function RunnerAIPanel({ open, setOpen }) {
   const { providers, model, currentProvider, setModel, setApiKey, setOllamaUrl,
           changeProvider, isGitHubLoggedIn, loginWithGitHub, apiKey, ollamaUrl } = useAuth();
@@ -52,8 +125,8 @@ function RunnerAIPanel({ open, setOpen }) {
         className="w-full flex items-center justify-between px-4 py-3 bg-[#0b0f1a] hover:bg-white/[0.02] transition-colors text-sm">
         <div className="flex items-center gap-2 text-slate-300 font-medium">
           <Cpu size={14} className="text-violet-400" />
-          IA para anÃ¡lisis: <span className="text-violet-400">{currentProvider.label}</span>
-          <span className="text-slate-500 font-mono text-xs">Â· {model}</span>
+          IA para analisis: <span className="text-violet-400">{currentProvider.label}</span>
+          <span className="text-slate-500 font-mono text-xs">? {model}</span>
         </div>
         {open ? <ChevronUp size={13} className="text-slate-500" /> : <ChevronDown size={13} className="text-slate-500" />}
       </button>
@@ -99,9 +172,8 @@ function RunnerAIPanel({ open, setOpen }) {
   );
 }
 
-// â”€â”€â”€ AnÃ¡lisis IA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function AIAnalysis({ logs, featureName, exitCode, summary }) {
-  const { providerId, model, apiKey, githubToken, ollamaUrl } = useAuth();
+  const { buildAIPayload } = useAuth();
   const [analysis, setAnalysis] = useState(null);
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState(null);
@@ -109,13 +181,35 @@ function AIAnalysis({ logs, featureName, exitCode, summary }) {
   const analyze = async () => {
     setLoading(true); setError(null); setAnalysis(null);
     try {
+      // Keep the request small and stable; backend also trims before sending to AI.
+      const compactLogs = (logs || [])
+        .slice(-250)
+        .map((l) => ({
+          type: l?.type || 'info',
+          text: String(l?.text || '').slice(0, 1200),
+        }));
+
       const res  = await fetch(`${BACKEND_URL}/runner/analyze`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ logs, featureName, exitCode, summary,
-          provider: providerId, model, apiKey: apiKey || githubToken || undefined, ollamaUrl: ollamaUrl || undefined }),
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          logs: compactLogs,
+          featureName,
+          exitCode,
+          summary,
+          ...buildAIPayload({}),
+        }),
       });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
+
+      const raw = await res.text();
+      let data = null;
+      try { data = JSON.parse(raw); }
+      catch {
+        if (!res.ok) throw new Error(`Error ${res.status}: respuesta no JSON del backend.`);
+        throw new Error('Respuesta inv�lida del backend.');
+      }
+      if (!res.ok || !data.success) throw new Error(data?.error || `Error ${res.status}`);
       setAnalysis(data.analysis);
     } catch (err) { setError(err.message); }
     finally { setLoading(false); }
@@ -124,7 +218,7 @@ function AIAnalysis({ logs, featureName, exitCode, summary }) {
   return (
     <div className="card">
       <div className="flex items-center justify-between mb-3">
-        <p className="card__title mb-0"><Sparkles size={14} className="text-violet-400" /> AnÃ¡lisis con IA</p>
+        <p className="card__title mb-0"><Sparkles size={14} className="text-violet-400" /> Analisis con IA</p>
         {!analysis
           ? <button onClick={analyze} disabled={loading}
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-violet-600/80 hover:bg-violet-500 disabled:opacity-40 text-white text-xs font-semibold transition-all">
@@ -132,11 +226,11 @@ function AIAnalysis({ logs, featureName, exitCode, summary }) {
             </button>
           : <button onClick={analyze} disabled={loading}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-slate-200 text-xs transition-all">
-              <RefreshCw size={11} className={loading ? 'animate-spin' : ''} /> ReanÃ¡lizar
+              <RefreshCw size={11} className={loading ? 'animate-spin' : ''} /> Reanalizar
             </button>}
       </div>
       {error && <div className="flex items-center gap-2 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 text-xs"><AlertTriangle size={13}/>{error}</div>}
-      {loading && !analysis && <div className="flex items-center justify-center py-8 text-slate-500 text-xs gap-2"><Loader size={14} className="animate-spin text-violet-400"/>La IA estÃ¡ analizando el output...</div>}
+      {loading && !analysis && <div className="flex items-center justify-center py-8 text-slate-500 text-xs gap-2"><Loader size={14} className="animate-spin text-violet-400"/>La IA est? analizando el output...</div>}
       {analysis && (
         <div className="space-y-3">
           <div className={`flex items-start gap-3 p-3 rounded-xl border text-xs ${analysis.status === 'success' ? 'bg-green-500/10 border-green-500/20 text-green-200' : 'bg-red-500/10 border-red-500/20 text-red-200'}`}>
@@ -145,7 +239,7 @@ function AIAnalysis({ logs, featureName, exitCode, summary }) {
           </div>
           {analysis.rootCause && (
             <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
-              <p className="text-xs font-semibold text-amber-400 mb-1 flex items-center gap-1.5"><AlertTriangle size={12}/>Causa raÃ­z</p>
+              <p className="text-xs font-semibold text-amber-400 mb-1 flex items-center gap-1.5"><AlertTriangle size={12}/>Causa ra?z</p>
               <p className="text-xs text-amber-200 leading-relaxed">{analysis.rootCause}</p>
             </div>
           )}
@@ -157,7 +251,7 @@ function AIAnalysis({ logs, featureName, exitCode, summary }) {
           )}
           {analysis.fixes?.length > 0 && (
             <div className="space-y-2">
-              <p className="text-xs font-semibold text-slate-300 flex items-center gap-1.5"><Lightbulb size={13} className="text-violet-400"/>CÃ³mo resolverlo</p>
+              <p className="text-xs font-semibold text-slate-300 flex items-center gap-1.5"><Lightbulb size={13} className="text-violet-400"/>C?mo resolverlo</p>
               {analysis.fixes.map((fix,i) => (
                 <div key={i} className="p-3 rounded-xl bg-violet-500/10 border border-violet-500/20">
                   <p className="text-xs font-semibold text-violet-300 mb-1">{fix.title}</p>
@@ -168,7 +262,7 @@ function AIAnalysis({ logs, featureName, exitCode, summary }) {
           )}
           {analysis.nextSteps?.length > 0 && (
             <div className="p-3 rounded-xl bg-white/5 border border-white/10">
-              <p className="text-xs font-semibold text-slate-300 mb-2 flex items-center gap-1.5"><ArrowRight size={12} className="text-blue-400"/>PrÃ³ximos pasos</p>
+              <p className="text-xs font-semibold text-slate-300 mb-2 flex items-center gap-1.5"><ArrowRight size={12} className="text-blue-400"/>Pr?ximos pasos</p>
               <ol className="space-y-1">{analysis.nextSteps.map((s,i) => <li key={i} className="text-xs text-slate-300 flex items-start gap-2"><span className="text-blue-400 font-bold shrink-0">{i+1}.</span>{s}</li>)}</ol>
             </div>
           )}
@@ -178,14 +272,13 @@ function AIAnalysis({ logs, featureName, exitCode, summary }) {
   );
 }
 
-// â”€â”€â”€ Resumen reporte Karate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function ReportSummary({ summary }) {
   if (!summary) return null;
   const { featuresPassed=0, featuresFailed=0, scenariosPassed=0, scenariosfailed=0, elapsedTime } = summary;
   const allOk = featuresFailed === 0 && scenariosfailed === 0;
   return (
     <div className={`card border ${allOk ? 'border-green-500/20 bg-green-500/5' : 'border-red-500/20 bg-red-500/5'}`}>
-      <div className="flex items-center gap-2 mb-3"><BarChart2 size={14} className={allOk?'text-green-400':'text-red-400'}/><p className="text-xs font-semibold text-slate-200">Ãšltimo reporte Karate</p></div>
+      <div className="flex items-center gap-2 mb-3"><BarChart2 size={14} className={allOk?'text-green-400':'text-red-400'}/><p className="text-xs font-semibold text-slate-200">?ltimo reporte Karate</p></div>
       <div className="grid grid-cols-4 gap-3">
         {[{label:'Features OK',val:featuresPassed,color:'text-green-400'},{label:'Features fail',val:featuresFailed,color:'text-red-400'},{label:'Scenarios OK',val:scenariosPassed,color:'text-green-400'},{label:'Scenarios fail',val:scenariosfailed,color:'text-red-400'}].map(({label,val,color})=>(
           <div key={label} className="text-center p-2 rounded-xl bg-black/20"><p className={`text-xl font-bold ${color}`}>{val}</p><p className="text-[10px] text-slate-400 mt-0.5">{label}</p></div>
@@ -196,7 +289,6 @@ function ReportSummary({ summary }) {
   );
 }
 
-// â”€â”€â”€ Feature list item con acciones â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function FeatureItem({ feature, selected, onSelect, onRename, onDelete, onExport }) {
   const [renaming,  setRenaming]  = useState(false);
   const [newName,   setNewName]   = useState('');
@@ -247,7 +339,7 @@ function FeatureItem({ feature, selected, onSelect, onRename, onDelete, onExport
         onClick={() => onSelect(feature)}>
         <ChevronRight size={10} className="shrink-0 opacity-50"/>
         <span className="truncate font-mono flex-1">{feature.name.replace('.feature','')}</span>
-        {/* Botones inline â€” solo al hover */}
+        {/* Botones inline: solo al hover */}
         {hovering && (
           <div className="flex items-center gap-0.5 shrink-0" onClick={e => e.stopPropagation()}>
             <button onClick={(e) => { e.stopPropagation(); onExport(feature); }}
@@ -281,17 +373,16 @@ function FeatureItem({ feature, selected, onSelect, onRename, onDelete, onExport
   );
 }
 
-// â”€â”€â”€ Modal crear feature â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function CreateModal({ onClose, onCreate }) {
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [err,  setErr]  = useState('');
 
   const submit = async () => {
-    if (!name.trim()) return setErr('IngresÃ¡ un nombre');
+    if (!name.trim()) return setErr('Ingres? un nombre');
     setBusy(true); setErr('');
     const ok = await onCreate(name.trim());
-    if (!ok) setErr('No se pudo crear. Â¿Ya existe ese nombre?');
+    if (!ok) setErr('No se pudo crear. ?Ya existe ese nombre?');
     setBusy(false);
   };
 
@@ -302,7 +393,7 @@ function CreateModal({ onClose, onCreate }) {
         <input autoFocus value={name} onChange={e => setName(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && submit()}
           className="form-control mb-1" placeholder="Ej: PCP-99999" />
-        <p className="text-[10px] text-slate-500 mb-4">Se crearÃ¡ como <span className="font-mono text-slate-400">{name || 'nombre'}.feature</span></p>
+        <p className="text-[10px] text-slate-500 mb-4">Se crear? como <span className="font-mono text-slate-400">{name || 'nombre'}.feature</span></p>
         {err && <p className="text-xs text-red-400 mb-3">{err}</p>}
         <div className="flex gap-2 justify-end">
           <button onClick={onClose} className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-slate-400 hover:text-slate-200 text-xs font-semibold transition-all">Cancelar</button>
@@ -316,34 +407,49 @@ function CreateModal({ onClose, onCreate }) {
   );
 }
 
-// ─── Modal configuración de ambientes ────────────────────────────────────────
 function EnvConfigModal({ envs, onClose, onSave }) {
-  const [list,     setList]     = useState(envs.map(e => ({ ...e })));
+  const [list, setList] = useState(normalizeEnvs(envs));
   const [newLabel, setNewLabel] = useState('');
-  const [err,      setErr]      = useState('');
+  const [newBaseUrl, setNewBaseUrl] = useState('');
+  const [err, setErr] = useState('');
 
   const addEnv = () => {
     const label = newLabel.trim();
-    if (!label) return setErr('Ingresá un nombre');
-    if (list.find(e => e.id === label.toLowerCase().replace(/\s+/g,'-'))) return setErr('Ya existe ese ambiente');
-    setList(prev => [...prev, { id: label.toLowerCase().replace(/\s+/g,'-'), label }]);
-    setNewLabel(''); setErr('');
+    const id = label.toLowerCase().replace(/\s+/g, '-');
+    const baseUrl = newBaseUrl.trim();
+    if (!label) return setErr('Ingresa un nombre');
+    if (list.find((e) => e.id === id)) return setErr('Ya existe ese ambiente');
+    setList((prev) => [...prev, { id, label, baseUrl }]);
+    setNewLabel('');
+    setNewBaseUrl('');
+    setErr('');
   };
 
   const removeEnv = (id) => {
     if (list.length <= 1) return setErr('Debe haber al menos un ambiente');
-    setList(prev => prev.filter(e => e.id !== id)); setErr('');
+    setList((prev) => prev.filter((e) => e.id !== id));
+    setErr('');
   };
 
-  const confirmUpdate = (id, val) => {
+  const updateEnv = (id, patch) => {
+    setList((prev) => prev.map((e) => (e.id === id ? { ...e, ...patch } : e)));
+    setErr('');
+  };
+
+  const confirmUpdateLabel = (id, val) => {
     const label = val.trim();
     if (!label) return;
-    setList(prev => prev.map(e => e.id === id ? { id: label.toLowerCase().replace(/\s+/g,'-'), label } : e));
+    const newId = label.toLowerCase().replace(/\s+/g, '-');
+    if (newId !== id && list.some((e) => e.id === newId)) {
+      setErr('Ya existe ese ambiente');
+      return;
+    }
+    setList((prev) => prev.map((e) => (e.id === id ? { ...e, id: newId, label } : e)));
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-[420px] rounded-2xl bg-[#0d1117] border border-[#1e293b] shadow-2xl p-6">
+      <div className="w-[720px] max-w-[95vw] rounded-2xl bg-[#0d1117] border border-[#1e293b] shadow-2xl p-6">
         <div className="flex items-center justify-between mb-4">
           <p className="font-semibold text-slate-100 flex items-center gap-2">
             <Settings size={15} className="text-violet-400"/> Configurar ambientes
@@ -357,11 +463,16 @@ function EnvConfigModal({ envs, onClose, onSave }) {
 
         <div className="space-y-2 mb-4">
           {list.map(e => (
-            <div key={e.id} className="flex items-center gap-2">
-              <input defaultValue={e.label}
-                onBlur={ev => confirmUpdate(e.id, ev.target.value)}
+            <div key={e.id} className="grid grid-cols-[180px_1fr_auto_auto] gap-2 items-center">
+              <input value={e.label}
+                onChange={ev => updateEnv(e.id, { label: ev.target.value })}
+                onBlur={ev => confirmUpdateLabel(e.id, ev.target.value)}
                 onKeyDown={ev => ev.key === 'Enter' && ev.target.blur()}
-                className="flex-1 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-200 text-xs font-mono outline-none focus:border-violet-500 transition-all"/>
+                className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-200 text-xs font-mono outline-none focus:border-violet-500 transition-all"/>
+              <input value={e.baseUrl || ''}
+                onChange={ev => updateEnv(e.id, { baseUrl: ev.target.value })}
+                placeholder="https://api.mi-ambiente.com"
+                className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-200 text-xs font-mono outline-none focus:border-violet-500 transition-all"/>
               <span className="text-[10px] text-slate-600 font-mono shrink-0 w-20 truncate">id: {e.id}</span>
               <button onClick={() => removeEnv(e.id)}
                 className="p-1.5 rounded-lg hover:bg-red-500/10 text-slate-500 hover:text-red-400 transition-all shrink-0">
@@ -371,11 +482,15 @@ function EnvConfigModal({ envs, onClose, onSave }) {
           ))}
         </div>
 
-        <div className="flex gap-2 mb-1">
+        <div className="grid grid-cols-[180px_1fr_auto] gap-2 mb-1">
           <input value={newLabel} onChange={e => { setNewLabel(e.target.value); setErr(''); }}
             onKeyDown={e => e.key === 'Enter' && addEnv()}
             placeholder="Nuevo ambiente (ej: staging)"
-            className="flex-1 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-200 text-xs font-mono outline-none focus:border-violet-500 transition-all"/>
+            className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-200 text-xs font-mono outline-none focus:border-violet-500 transition-all"/>
+          <input value={newBaseUrl} onChange={e => { setNewBaseUrl(e.target.value); setErr(''); }}
+            onKeyDown={e => e.key === 'Enter' && addEnv()}
+            placeholder="URL base (ej: https://api-stg.midominio.com)"
+            className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-200 text-xs font-mono outline-none focus:border-violet-500 transition-all"/>
           <button onClick={addEnv}
             className="px-3 py-2 rounded-lg bg-violet-600/80 hover:bg-violet-500 text-white text-xs font-semibold transition-all flex items-center gap-1.5">
             <Plus size={12}/> Agregar
@@ -388,7 +503,7 @@ function EnvConfigModal({ envs, onClose, onSave }) {
             className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-slate-400 hover:text-slate-200 text-xs font-semibold transition-all">
             Cancelar
           </button>
-          <button onClick={() => { onSave(list); onClose(); }}
+          <button onClick={() => { onSave(normalizeEnvs(list)); onClose(); }}
             className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold transition-all flex items-center gap-2">
             <Check size={12}/> Guardar
           </button>
@@ -398,7 +513,7 @@ function EnvConfigModal({ envs, onClose, onSave }) {
   );
 }
 
-// ─── Componente principal ─────────────────────────────────────────────────────
+// Componente principal
 export default function FeatureRunner() {
   const [agentStatus, setAgentStatus] = useState('checking');
   const [features,    setFeatures]    = useState([]);
@@ -430,14 +545,26 @@ export default function FeatureRunner() {
       try {
         const form = JSON.parse(confluenceData);
         const featureContent = generateKarateFeature(form);
-        const featureName = `${form.featureName || 'Feature'}-${Date.now()}.feature`;
+        const featureName = `${form.featureName || 'Feature'}-${Date.now()}`;
 
-        api('POST', '/runner/features/create', { path: featureName })
-          .then(() => api('POST', '/runner/features/save', { path: featureName, content: featureContent }))
-          .then(() => {
+        api('POST', '/runner/features/create', { name: featureName })
+          .then((created) => {
+            if (!created?.success || !created?.feature?.relativePath) {
+              throw new Error(created?.error || 'No se pudo crear el feature en Runner');
+            }
+            return api('POST', '/runner/features/save', {
+              path: created.feature.relativePath,
+              content: featureContent,
+            }).then((saved) => {
+              if (!saved?.success) throw new Error(saved?.error || 'No se pudo guardar el feature');
+              return created.feature;
+            });
+          })
+          .then((createdFeature) => {
             localStorage.removeItem('qatestui_confluence_import');
             fetchFeatures();
-            toast('✅ Feature desde Confluence cargado al Runner');
+            selectFeature(createdFeature);
+            toast('Feature desde Confluence cargado al Runner');
           })
           .catch(err => console.warn('Error loading confluence import:', err));
       } catch (err) {
@@ -458,7 +585,7 @@ export default function FeatureRunner() {
       }
       return parsed;
     } catch (err) {
-      throw new Error(`${label} inválido: ${err.message}`);
+      throw new Error(`${label} inv�lido: ${err.message}`);
     }
   };
 
@@ -471,12 +598,14 @@ export default function FeatureRunner() {
     saveEnvs(newEnvs);
     setEnvs(newEnvs);
     if (!newEnvs.find(e => e.id === env)) setEnv(newEnvs[0]?.id || '');
-    toast('✅ Ambientes guardados');
+    toast('Ambientes guardados');
   };
 
   const api = async (method, path, body) => {
     const res = await fetch(`${BACKEND_URL}${path}`, {
-      method, headers: { 'Content-Type': 'application/json' },
+      method,
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : undefined,
     });
     return res.json();
@@ -520,25 +649,24 @@ export default function FeatureRunner() {
     });
   };
 
-  // â”€â”€ GestiÃ³n de archivos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleRename = async (feature, newName) => {
     const d = await api('POST', '/runner/features/rename', { oldPath: feature.relativePath, newName });
     if (d.success) {
-      toast(`âœ… Renombrado a ${d.feature.name}`);
+      toast(`✅ Renombrado a ${d.feature.name}`);
       setFeatures(prev => prev.map(f => f.relativePath === feature.relativePath ? d.feature : f));
       if (selected?.relativePath === feature.relativePath) setSelected(d.feature);
     } else {
-      toast(`âŒ ${d.error}`);
+      toast(`�?� ${d.error}`);
     }
   };
 
   const handleDelete = async (feature) => {
     const d = await api('DELETE', '/runner/features', { path: feature.relativePath });
     if (d.success) {
-      toast(`ðŸ—‘ ${feature.name} eliminado`);
+      toast(`🗑 ${feature.name} eliminado`);
       setFeatures(prev => prev.filter(f => f.relativePath !== feature.relativePath));
       if (selected?.relativePath === feature.relativePath) { setSelected(null); setFileContent(''); setLogs([]); setRunResult(null); }
-    } else { toast(`âŒ ${d.error}`); }
+    } else { toast(`�?� ${d.error}`); }
   };
 
   const handleExport = async (feature) => {
@@ -550,14 +678,14 @@ export default function FeatureRunner() {
       a.href = url; a.download = feature.name;
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
-      toast(`â¬‡ Exportado: ${feature.name}`);
-    } catch { toast('âŒ Error al exportar'); }
+      toast(`⬇ Exportado: ${feature.name}`);
+    } catch { toast('Error al exportar'); }
   };
 
   const handleCreate = async (name) => {
     const d = await api('POST', '/runner/features/create', { name });
     if (d.success) {
-      toast(`âœ… Creado: ${d.feature.name}`);
+      toast(`✅ Creado: ${d.feature.name}`);
       setFeatures(prev => [...prev, d.feature]);
       setShowCreate(false);
       selectFeature(d.feature);
@@ -572,10 +700,10 @@ export default function FeatureRunner() {
     const content = await file.text();
     const d = await api('POST', '/runner/features/import', { name: file.name, content });
     if (d.success) {
-      toast(`âœ… Importado: ${d.feature.name}`);
+      toast(`✅ Importado: ${d.feature.name}`);
       setFeatures(prev => [...prev, d.feature]);
       selectFeature(d.feature);
-    } else { toast(`âŒ ${d.error}`); }
+    } else { toast(`�?� ${d.error}`); }
     e.target.value = '';
   };
 
@@ -588,7 +716,9 @@ export default function FeatureRunner() {
       const mergedProperties = { ...globalProps, ...selectedFeatureProps };
 
       const res = await fetch(`${BACKEND_URL}/runner/run`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           featurePath: featurePath || null,
           env,
@@ -612,11 +742,10 @@ export default function FeatureRunner() {
       }
     } catch (err) {
       setLogs(prev => [...prev, { type: 'error', text: err.message }]);
-      setRunResult({ success: false, exitCode: 1, message: 'âŒ Error de conexiÃ³n' });
+      setRunResult({ success: false, exitCode: 1, message: 'Error de conexion' });
     } finally { setRunning(false); }
   };
 
-  // â”€â”€â”€ Render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   return (
     <div className="space-y-4">
       {showCreate && <CreateModal onClose={() => setShowCreate(false)} onCreate={handleCreate} />}
@@ -639,7 +768,7 @@ export default function FeatureRunner() {
           {agentStatus === 'ok'       && <Wifi size={12} className="text-green-400"/>}
           {agentStatus === 'down'     && <WifiOff size={12} className="text-red-400"/>}
           <span className={`text-[11px] font-semibold ${agentStatus === 'ok' ? 'text-green-400' : agentStatus === 'down' ? 'text-red-400' : 'text-slate-400'}`}>
-            {agentStatus === 'ok' ? 'Agente activo' : agentStatus === 'down' ? 'Agente caÃ­do' : 'Verificando...'}
+            {agentStatus === 'ok' ? 'Agente activo' : agentStatus === 'down' ? 'Agente ca?do' : 'Verificando...'}
           </span>
           <button onClick={checkAgent} className="p-0.5 rounded hover:bg-white/5 text-slate-500 hover:text-slate-300 transition-all"><RefreshCw size={11}/></button>
         </div>
@@ -668,7 +797,7 @@ export default function FeatureRunner() {
           {/* Base URL del ambiente seleccionado */}
           {envs.find(e => e.id === env)?.baseUrl && (
             <p className="text-[10px] font-mono text-slate-500 truncate max-w-xs" title={envs.find(e => e.id === env)?.baseUrl}>
-              → {envs.find(e => e.id === env)?.baseUrl}
+              URL: {envs.find(e => e.id === env)?.baseUrl}
             </p>
           )}
         </div>
@@ -677,8 +806,8 @@ export default function FeatureRunner() {
       {showProps && (
         <div className="card">
           <div className="flex items-center justify-between mb-3">
-            <p className="card__title mb-0"><Terminal size={13}/> Properties de ejecucion</p>
-            <p className="text-[10px] text-slate-500 font-mono">se envian como -Dkey=value</p>
+            <p className="card__title mb-0"><Terminal size={13}/> Properties de ejecuci�n</p>
+            <p className="text-[10px] text-slate-500 font-mono">se env�an como -Dkey=value</p>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -711,7 +840,7 @@ export default function FeatureRunner() {
           <WifiOff size={16} className="mt-0.5 shrink-0"/>
           <div>
             <p className="font-semibold text-sm">Runner Agent no disponible</p>
-            <p className="text-xs text-red-400 mt-1">EjecutÃ¡ <code className="bg-red-500/20 px-1 rounded">start.ps1</code> o verificÃ¡ que el agente estÃ© en <code className="bg-red-500/20 px-1 rounded">localhost:4000</code>.</p>
+            <p className="text-xs text-red-400 mt-1">Ejecut? <code className="bg-red-500/20 px-1 rounded">start.ps1</code> o verific? que el agente est? en <code className="bg-red-500/20 px-1 rounded">localhost:4000</code>.</p>
           </div>
         </div>
       )}
@@ -719,7 +848,7 @@ export default function FeatureRunner() {
       {agentStatus === 'ok' && (
         <div className="flex gap-4" style={{ minHeight: '60vh' }}>
 
-          {/* â”€â”€ Lista features con gestiÃ³n â”€â”€ */}
+          {/* Lista features con gesti?n */}
           <div className="w-64 shrink-0 flex flex-col gap-3">
             <div className="card flex-1 flex flex-col">
               {/* Header lista */}
@@ -771,7 +900,7 @@ export default function FeatureRunner() {
             </div>
           </div>
 
-          {/* â”€â”€ Panel derecho â”€â”€ */}
+          {/* Panel derecho */}
           <div className="flex-1 flex flex-col gap-4 min-w-0">
             {selected ? (
               <>
@@ -805,7 +934,7 @@ export default function FeatureRunner() {
               </>
             ) : (
               <div className="card flex items-center justify-center text-slate-500 text-sm" style={{minHeight:'120px'}}>
-                SeleccionÃ¡ un feature para verlo y ejecutarlo
+                Seleccion? un feature para verlo y ejecutarlo
               </div>
             )}
 
@@ -830,7 +959,7 @@ export default function FeatureRunner() {
               </div>
             )}
 
-            {/* AnÃ¡lisis IA */}
+            {/* Análisis IA */}
             {runResult && logs.length > 0 && (
               <AIAnalysis logs={logs} featureName={selected?.name} exitCode={runResult.exitCode} summary={runResult.summary}/>
             )}
