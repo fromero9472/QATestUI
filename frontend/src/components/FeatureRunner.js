@@ -346,17 +346,23 @@ function parseFeatureScenarios(content = '') {
 
 function generateKarateFeature(form) {
   const safe = (v = '') => String(v).replace(/\r?\n/g, ' ').trim();
+  const formatAssertionValue = (raw = '') => {
+    const v = String(raw ?? '').trim();
+    if (v === '') return "''";
+    if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) return v;
+    if (v === 'null' || v === 'true' || v === 'false') return v;
+    if (!Number.isNaN(Number(v))) return v;
+    return `'${v.replace(/'/g, "\\'")}'`;
+  };
   const featureName = safe(form?.featureName || 'FeatureImportado');
   const endpoint = safe(form?.endpoint || '/');
-  const baseUrl = safe(form?.baseUrl || '');
   const scenarios = Array.isArray(form?.scenarios) ? form.scenarios : [];
 
   const lines = [
     `Feature: ${featureName}`,
     '',
     '  Background:',
-    `    * def _featureBaseUrl = '${baseUrl}'`,
-    '    * url _featureBaseUrl != \'\' ? _featureBaseUrl : baseUrl',
+    '    * url baseUrl',
     '',
   ];
 
@@ -389,7 +395,7 @@ function generateKarateFeature(form) {
       const op = safe(a.operator || '!= null');
       const value = (a?.value || '').trim();
       lines.push(value
-        ? `    And match response.${safe(a.field)} ${op} ${value}`
+        ? `    And match response.${safe(a.field)} ${op} ${formatAssertionValue(value)}`
         : `    And match response.${safe(a.field)} ${op}`
       );
     });

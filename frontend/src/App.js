@@ -214,6 +214,12 @@ function AppInner() {
 
   const handleSmartFill = (parsed) => {
     setForm((prev) => {
+      const scenarioSignature = (s) => JSON.stringify({
+        name: (s?.name || '').trim().toLowerCase(),
+        method: (s?.method || 'POST').toUpperCase(),
+        expectedStatus: Number(s?.expectedStatus || 200),
+        body: (s?.body || '').trim(),
+      });
       const rawScenarios = Array.isArray(parsed.scenarios) ? parsed.scenarios : parsed.scenario ? [parsed.scenario] : [];
       const newScenarios = rawScenarios.map((s) => {
         const needsBody = ['POST', 'PUT', 'PATCH'].includes(s.method);
@@ -231,6 +237,15 @@ function AppInner() {
       });
       if (newScenarios.length === 0) return prev;
 
+      const mergedScenarios = [...(prev.scenarios || []), ...newScenarios];
+      const seen = new Set();
+      const dedupedScenarios = mergedScenarios.filter((s) => {
+        const key = scenarioSignature(s);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
       const updatedForm = {
         featureName: parsed.featureName || prev.featureName,
         endpoint:    parsed.endpoint    || prev.endpoint,
@@ -238,7 +253,7 @@ function AppInner() {
         enableOcp:   parsed.enableOcp   || prev.enableOcp   || false,
         ocpToken:    parsed.ocpToken    || prev.ocpToken    || '',
         namespace:   parsed.namespace   || prev.namespace   || '',
-        scenarios:   prev.scenarios.length === 0 ? newScenarios : [...prev.scenarios, ...newScenarios],
+        scenarios:   dedupedScenarios,
       };
 
       // Si viene de Confluence Import, guarda en localStorage y cambia a runner

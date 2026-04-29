@@ -513,8 +513,10 @@ Handlebars.registerHelper('formatAssertionValue', (value, operator) => {
   const opsWithoutValue = ['!= null', '== null', '== true', '== false'];
   if (opsWithoutValue.includes(operator)) return '';
 
+  // Si el valor es string vacío, en Karate debe representarse como ''
+  if (value === '') return "''";
   // Si no hay valor, devolver vacío
-  if (value === null || value === undefined || value === '') return '';
+  if (value === null || value === undefined) return '';
 
   // Convertir a string para procesamiento
   const strValue = String(value).trim();
@@ -673,6 +675,22 @@ REGLA 6 — Inferencia de namespace desde baseUrl
 Si la baseUrl contiene un patrón como "servicio-claropay-ar-AMBIENTE.apps.osen02.claro.amx",
 el namespace probable es "claropay-ar-AMBIENTE" (ej: "claropay-ar-desa"). Ponelo en namespace.`;
 
+const SYSTEM_PROMPT_HU_ADDENDUM = `
+REGLA 7 — Confluence HU (plantilla fija) y mapeo correcto
+- En HUs de Confluence, "Escenario 1/2/3" suele ser un bloque funcional (Claro, ClaroPay, Transaction), NO un único escenario Karate.
+- Creá UN escenario Karate por cada caso de validación tipo "Que se envía... / Se valida...".
+- Si aparecen secciones/tablas Dado-Cuando-Entonces, tomalas como fuente principal.
+- No agregues comillas sobrantes al endpoint/path.
+
+REGLA 8 — Payload realista de request
+- Para validaciones de request, priorizá payloads completos y coherentes (incluyendo transaction), salvo que el caso valide ausencia/null.
+- Si el caso dice "solo transaction", claro y claroPay deben ir null/vacíos según corresponda.
+
+REGLA 9 — Assertions de error completas
+- Si la HU define formato de error (code/message/status/type/subType/detail), incluí assertions de esos campos.
+- Conservá detail textual exacto.
+`;
+
 // ─── POST /parse-criteria (con IA Groq) ────────────────────────────────────
 // ─── Post-process: extracciones deterministas que no dependen de la IA ───────
 const postProcess = (parsed, originalText) => {
@@ -705,8 +723,9 @@ const postProcess = (parsed, originalText) => {
   // Busca "GET /path", "POST /path", etc. como primera opción
   const methodPathMatch = text.match(/\b(GET|POST|PUT|DELETE|PATCH)\s+(\/[^\s\n]*)/i);
   if (methodPathMatch) {
-    parsed.endpoint = methodPathMatch[2].trim();
+    parsed.endpoint = sanitizeEndpoint(methodPathMatch[2].trim());
   }
+  if (parsed.endpoint) parsed.endpoint = sanitizeEndpoint(parsed.endpoint);
 
   // ── 4. Tablas DB (SCHEMA.TABLA) ───────────────────────────────────────────
   const tableMatches = [...text.matchAll(/\b([A-Z][A-Z0-9_]+\.[A-Z][A-Z0-9_]+)\b/g)].map(m => m[1]);
@@ -771,6 +790,137 @@ const postProcess = (parsed, originalText) => {
   return parsed;
 };
 
+const tryBuildClaroHuDeterministicScenarios = (parsed, rawText = '') => {
+  const text = String(rawText || '');
+  const endpoint = sanitizeEndpoint(parsed?.endpoint || '');
+  const looksLikeCreditProfileHu =
+    endpoint === '/v1/credit/profile' &&
+    /CREDIT_PROFILE_BAD_REQUEST/i.test(text) &&
+    /Que se env[ií]a el request POST\s*\/v1\/credit\/profile/i.test(text);
+
+  if (!looksLikeCreditProfileHu) return parsed;
+
+  const baseAssertions = [
+    { field: 'code', operator: '==', value: '400' },
+    { field: 'message', operator: '==', value: "'CREDIT_PROFILE_BAD_REQUEST'" },
+    { field: 'status', operator: '==', value: "''" },
+    { field: 'type', operator: '==', value: "'PERFILAMIENTO'" },
+    { field: 'subType', operator: '==', value: "'81'" },
+  ];
+
+  const txDefaultFalse = { channelId: 1, caller: 'texto', originId: 1, isTransaction: false };
+  const txDefaultTrue = { channelId: 1, caller: 'texto', originId: 1, isTransaction: true };
+  const body = (obj) => JSON.stringify(obj, null, 2);
+  const makeScenario = (name, expectedStatus, requestObj, detail = null) => {
+    const assertions = expectedStatus === 400
+      ? [...baseAssertions, ...(detail ? [{ field: 'detail', operator: '==', value: detail }] : [])]
+      : [];
+    return {
+      name,
+      method: 'POST',
+      expectedStatus,
+      assertions,
+      detectedBody: body(requestObj),
+      detectedParams: [],
+      enableDb: false,
+      dbTable: '',
+      dbColumns: '',
+      dbFilter: '',
+      dbAssertions: [],
+      enableOcpEvidence: /se valida los log/i.test(text),
+    };
+  };
+
+  const scenarios = [
+    makeScenario('1) Validacion Claro - No puede enviar datos de Claro y ClaroPay juntos', 400, {
+      claro: { nim: 1123456789, cltId: '16230885', cuit: 20117117110, identificationType: 'DNI', identificationNumber: 11711711, name: 'LUCAS ANDRES', surname: 'BUSSO', birthdate: '1997-03-11' },
+      claroPay: { cuit: 20117117110, uuid: 'c6f8b1b4-a354-4155-b425-44ab751632b4' },
+      transaction: txDefaultFalse,
+    }, 'No puede enviar datos de Claro y ClaroPay en el mismo request'),
+    makeScenario('2) Validacion Claro - cuit PF (<30) requiere name, surname y birthdate', 400, {
+      claro: { cuit: 20000000000, name: null, surname: null, birthdate: null },
+      claroPay: null,
+      transaction: txDefaultTrue,
+    }, 'El flujo requiere que name, surname y birthdate no sean null'),
+    makeScenario('3) Validacion Claro - flujo por identificationNumber requiere name, surname, birthdate e identificationType', 400, {
+      claro: { identificationNumber: 12345678, identificationType: null, name: null, surname: null, birthdate: null },
+      claroPay: null,
+      transaction: txDefaultFalse,
+    }, 'El flujo requiere que name, surname, birthdate e identificationType no sean null'),
+    makeScenario('4) Validacion Claro - CUIT invalido (distinto de 11 digitos)', 400, {
+      claro: { cuit: 2011711711 },
+      claroPay: null,
+      transaction: txDefaultFalse,
+    }, 'CUIT debe contener solo números y tener 11 dígitos'),
+    makeScenario('5) Validacion Claro - NIM con letras', 400, {
+      claro: { nim: 'abc123' },
+      claroPay: null,
+      transaction: txDefaultFalse,
+    }, 'NIM debe contener solo números'),
+    makeScenario('6) Validacion Claro - birthdate con formato invalido', 400, {
+      claro: { cuit: 20117117110, name: 'Juan', surname: 'Perez', birthdate: '11-03-1997' },
+      claroPay: null,
+      transaction: txDefaultFalse,
+    }, 'birthdate debe tener formato aaaa-mm-dd'),
+    makeScenario('7) Validacion General - Request vacio', 400, {
+      claro: {},
+      claroPay: {},
+      transaction: {},
+    }, 'El request se encuentra vacío'),
+    makeScenario('8) Validacion Claro - name/surname/birthdate sin cuit ni identificationNumber (y sin cltId ni nim)', 400, {
+      claro: { name: 'test', surname: 'test', birthdate: '2023-01-01', cuit: null, identificationNumber: null, cltId: null, nim: null },
+      claroPay: null,
+      transaction: txDefaultFalse,
+    }, 'El campo cuit o identificationNumber es requerido'),
+    makeScenario('9) Validacion Claro - identificationNumber con letras o caracteres especiales', 400, {
+      claro: { identificationNumber: '12A#45' },
+      claroPay: null,
+      transaction: txDefaultFalse,
+    }, 'El campo identificationNumber debe contener solo números'),
+    makeScenario('10) Validacion ClaroPay - uuid con formato invalido', 400, {
+      claro: null,
+      claroPay: { uuid: 'short-uuid' },
+      transaction: txDefaultFalse,
+    }, 'uuid tiene formato invalido'),
+    makeScenario('11) Validacion ClaroPay - CUIT invalido', 400, {
+      claro: null,
+      claroPay: { cuit: 12345 },
+      transaction: txDefaultFalse,
+    }, 'CUIT debe contener solo números y tener 11 dígitos'),
+    makeScenario('12) Validacion Transaction - isTransaction=true y channelId/originId null', 400, {
+      claro: { cuit: 20117117110 },
+      claroPay: null,
+      transaction: { channelId: null, caller: 'texto', originId: null, isTransaction: true },
+    }, 'Los campos channelId y originId no pueden ser null'),
+    makeScenario('13) Validacion Transaction - isTransaction=false y channelId/originId null (default=1)', 200, {
+      claro: { cuit: 20117117110 },
+      claroPay: null,
+      transaction: { channelId: null, caller: 'texto', originId: null, isTransaction: false },
+    }),
+    makeScenario('14) Validacion Transaction - isTransaction null o vacio', 400, {
+      claro: { cuit: 20117117110 },
+      claroPay: null,
+      transaction: { channelId: 1, caller: 'texto', originId: 1, isTransaction: null },
+    }, 'El campo isTransaction no puede ser null ni vacío'),
+    makeScenario('15) Validacion Transaction - solo transaction sin datos de claro y claropay', 400, {
+      claro: null,
+      claroPay: null,
+      transaction: { channelId: 1, caller: 'texto', originId: 1, isTransaction: false },
+    }, 'Debe ingresar algún dato requerido claro o claroPay'),
+    makeScenario('16) Validacion Transaction - caller null o vacio', 400, {
+      claro: { cuit: 20117117110 },
+      claroPay: null,
+      transaction: { channelId: 1, caller: null, originId: 1, isTransaction: false },
+    }, 'El campo caller no puede ser vacío o null'),
+  ];
+
+  return {
+    ...parsed,
+    endpoint,
+    scenarios,
+  };
+};
+
 app.post('/parse-criteria', async (req, res) => {
   const { text, provider = 'groq', apiKey, model, ollamaUrl } = req.body;
   const effectiveApiKey = ['github', 'copilot'].includes(provider)
@@ -798,7 +948,7 @@ app.post('/parse-criteria', async (req, res) => {
     const raw = await callAI({
       provider, apiKey: effectiveApiKey, model, ollamaUrl,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: `${SYSTEM_PROMPT}\n${SYSTEM_PROMPT_HU_ADDENDUM}` },
         { role: 'user',   content: text }
       ],
     });
@@ -823,6 +973,7 @@ app.post('/parse-criteria', async (req, res) => {
 
     // ── Post-proceso determinista (regex sobre el texto original) ──
     postProcess(parsed, text);
+    parsed = tryBuildClaroHuDeterministicScenarios(parsed, text);
 
     // Soporte para respuesta con "scenarios" (array) o "scenario" (legacy)
     if (!Array.isArray(parsed.scenarios)) {
@@ -867,6 +1018,14 @@ const SAFE_DB_COLUMNS = /^[A-Za-z0-9_.*, ]+$/;
 
 const sanitizeQuoted = (str = '') => String(str).replace(/"/g, '\\"').replace(/\r?\n/g, ' ').trim();
 const sanitizeBody = (str = '') => String(str).replace(/"""/g, '\\"\\"\\"').trim();
+const sanitizeEndpoint = (raw = '') => {
+  let endpoint = String(raw || '').trim();
+  endpoint = endpoint.replace(/^['"]+|['"]+$/g, '');
+  endpoint = endpoint.replace(/[)"'.,;:\s]+$/g, '');
+  if (endpoint && !endpoint.startsWith('/')) endpoint = `/${endpoint}`;
+  endpoint = endpoint.replace(/\/{2,}/g, '/');
+  return endpoint;
+};
 
 /**
  * Returns true when a raw assertion value is a plain string literal that
@@ -884,7 +1043,7 @@ const needsQuotes = (val) => {
 const normalizeScenarios = (scenarios) =>
   scenarios.map((s) => ({
     ...s,
-    method:  s.method.toUpperCase(),
+    method:  String(s.method || 'POST').toUpperCase(),
     params:  (s.params  || [])
       .filter(p => p.key && p.key.trim())
       .map(p => ({ ...p, key: p.key.trim(), value: sanitizeQuoted(p.value || '') })),
@@ -936,10 +1095,11 @@ app.post('/generate-feature', featureValidation, (req, res) => {
   try {
     const { featureName, endpoint, scenarios, baseUrl, enableOcp, ocpToken, namespace } = req.body;
     const normalizedScenarios = normalizeScenarios(scenarios);
+    const normalizedEndpoint = sanitizeEndpoint(endpoint || '');
 
     const featureContent = featureTemplate({
       featureName,
-      endpoint,
+      endpoint: normalizedEndpoint,
       baseUrl:    baseUrl    || '',
       enableOcp:  !!enableOcp,
       ocpToken:   ocpToken   || '',
@@ -962,10 +1122,11 @@ app.post('/download-feature', featureValidation, (req, res) => {
   try {
     const { featureName, endpoint, scenarios, baseUrl, enableOcp, ocpToken, namespace } = req.body;
     const normalizedScenarios = normalizeScenarios(scenarios);
+    const normalizedEndpoint = sanitizeEndpoint(endpoint || '');
 
     const featureContent = featureTemplate({
       featureName,
-      endpoint,
+      endpoint: normalizedEndpoint,
       baseUrl:    baseUrl    || '',
       enableOcp:  !!enableOcp,
       ocpToken:   ocpToken   || '',
@@ -1116,7 +1277,7 @@ app.post('/confluence-fetch', async (req, res) => {
     const raw = await callAI({
       provider, apiKey: effectiveApiKey, model, ollamaUrl,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: `${SYSTEM_PROMPT}\n${SYSTEM_PROMPT_HU_ADDENDUM}` },
         { role: 'user',   content: fullText },
       ],
     });
@@ -1137,6 +1298,7 @@ app.post('/confluence-fetch', async (req, res) => {
       throw parseErr;
     }
     postProcess(parsed, fullText);
+    parsed = tryBuildClaroHuDeterministicScenarios(parsed, fullText);
 
     if (!Array.isArray(parsed.scenarios)) {
       parsed.scenarios = parsed.scenario ? [parsed.scenario] : [];
@@ -1285,7 +1447,7 @@ ${refinementPrompt}`;
     const raw = await callAI({
       provider, apiKey: effectiveApiKey, model, ollamaUrl,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: `${SYSTEM_PROMPT}\n${SYSTEM_PROMPT_HU_ADDENDUM}` },
         { role: 'user',   content: combinedText },
       ],
     });
@@ -1306,6 +1468,7 @@ ${refinementPrompt}`;
       throw parseErr;
     }
     postProcess(parsed, combinedText);
+    parsed = tryBuildClaroHuDeterministicScenarios(parsed, combinedText);
 
     if (!Array.isArray(parsed.scenarios)) {
       parsed.scenarios = parsed.scenario ? [parsed.scenario] : [];
@@ -1587,4 +1750,5 @@ app.listen(PORT, () => {
   console.log(`   POST /download-feature  → descarga el .feature como archivo`);
   console.log(`   GET  /health            → estado del servidor\n`);
 });
+
 

@@ -1,8 +1,7 @@
 Feature: {{featureName}}
 
   Background:
-    * def featureBaseUrl = '{{baseUrl}}'
-    * url featureBaseUrl == '' ? baseUrl : _featureBaseUrl
+    * url baseUrl
     * configure ssl = true
 
 {{#if enableOcp}}
@@ -49,7 +48,7 @@ Feature: {{featureName}}
 {{/if}}
 
     # ── Execution ──────────────────────────────────────────────────
-    When method {{../method}}
+    When method {{method}}
 
     # ── Assertions ─────────────────────────────────────────────────
     Then status {{expectedStatus}}
