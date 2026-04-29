@@ -821,8 +821,11 @@ export default function FeatureRunner() {
      const [toastMsg,    setToastMsg]    = useState('');
       const [reports, setReports] = useState(() => loadReports());
       const [logsCopied, setLogsCopied] = useState(false);
-      const [featureScenarios, setFeatureScenarios] = useState([]);
-      const [runningScenarioKey, setRunningScenarioKey] = useState(null);
+       const [featureScenarios, setFeatureScenarios] = useState([]);
+       const [runningScenarioKey, setRunningScenarioKey] = useState(null);
+       const [selectedScenarioIds, setSelectedScenarioIds] = useState([]);
+       const [editorJump, setEditorJump] = useState({ line: null, nonce: 0 });
+      const [batchProgress, setBatchProgress] = useState({ active: false, total: 0, current: 0 });
       const [panelWidth, setPanelWidth] = useState(() => {
        try {
          const saved = localStorage.getItem('qatestui_runner_panel_width');
@@ -940,6 +943,9 @@ export default function FeatureRunner() {
       setLogs([]);
       setFileContent('');
       setFeatureScenarios([]);
+      setSelectedScenarioIds([]);
+      setEditorJump({ line: null, nonce: 0 });
+      setBatchProgress({ active: false, total: 0, current: 0 });
       try {
         const d = await api('GET', `/runner/features/content?path=${encodeURIComponent(feature.relativePath)}`);
         const nextContent = d.content || '';
@@ -1014,12 +1020,17 @@ export default function FeatureRunner() {
       if (!currentReport || !scenarioPatch) return currentReport;
       const existingScenarios = Array.isArray(currentReport.scenarios) ? currentReport.scenarios : [];
       const lineFromPatch = Number(scenarioPatch.line);
+      const lineFromScenarioName = (name = '') => {
+        const m = String(name || '').match(/^\[(\d+):(\d+)\]/);
+        return m ? Number(m[2]) : null;
+      };
       const idx = existingScenarios.findIndex((s) => {
-        const sameLine = Number.isInteger(lineFromPatch) && Number(s?.line) === lineFromPatch;
+        const currentLine = Number.isInteger(Number(s?.line)) ? Number(s.line) : lineFromScenarioName(s?.name);
+        const sameLine = Number.isInteger(lineFromPatch) && currentLine === lineFromPatch;
         const sameName = String(s?.name || '').trim() === String(scenarioPatch?.name || '').trim();
         return sameLine || sameName;
       });
-      if (idx < 0) return currentReport;
+      if (idx < 0) return null;
       const mergedScenarios = [...existingScenarios];
       mergedScenarios[idx] = { ...mergedScenarios[idx], ...scenarioPatch };
       const passed = mergedScenarios.filter((s) => String(s?.status || '').toUpperCase() === 'PASSED').length;
@@ -1035,6 +1046,13 @@ export default function FeatureRunner() {
     };
 
     const runFeature = async ({ featurePath = null, scenario = null } = {}) => {
+      const scenarioLine = Number.isInteger(Number(scenario?.line)) && Number(scenario?.line) > 0
+        ? Number(scenario.line)
+        : null;
+      if (scenario && !scenarioLine) {
+        toast('Linea de escenario invalida. Volve a seleccionar el feature y reintenta.');
+        return;
+      }
       setLogs([]); setRunResult(null); setRunning(true); setRunningScenarioKey(scenario?.id || null);
       let tempLogs = [];
       try {
@@ -1048,7 +1066,7 @@ export default function FeatureRunner() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             featurePath: featurePath || null,
-            scenarioLine: scenario?.line ?? null,
+            scenarioLine,
             env,
             baseUrl: envs.find(e => e.id === env)?.baseUrl || '',
             properties: mergedProperties,
@@ -1074,11 +1092,13 @@ export default function FeatureRunner() {
                 const normalizedReport = { ...report, scenarios: scenariosWithLine };
                 const reportPath = featurePath || selected?.relativePath;
                 if (reportPath) {
-                  const existingReport = getReportForFeature(reports, reportPath);
-                  const nextReport = scenario && normalizedReport?.scenarios?.[0]
+                  const latestReports = loadReports();
+                  const existingReport = getReportForFeature(latestReports, reportPath);
+                  const mergedScenarioReport = scenario && normalizedReport?.scenarios?.[0]
                     ? mergeScenarioIntoReport(existingReport, { ...normalizedReport.scenarios[0], line: scenario.line, name: scenario.name })
-                    : normalizedReport;
-                  const updatedReports = saveReportForFeature(reports, reportPath, nextReport);
+                    : null;
+                  const nextReport = mergedScenarioReport || normalizedReport;
+                  const updatedReports = saveReportForFeature(latestReports, reportPath, nextReport);
                   setReports(updatedReports);
                 }
               } else {
@@ -1100,6 +1120,34 @@ export default function FeatureRunner() {
         setRunning(false);
         setRunningScenarioKey(null);
       }
+    };
+
+    const toggleScenarioSelection = (scenarioId) => {
+      setSelectedScenarioIds((prev) => (
+        prev.includes(scenarioId)
+          ? prev.filter((id) => id !== scenarioId)
+          : [...prev, scenarioId]
+      ));
+    };
+
+    const toggleSelectAllScenarios = () => {
+      setSelectedScenarioIds((prev) => (
+        prev.length === featureScenarios.length ? [] : featureScenarios.map((s) => s.id)
+      ));
+    };
+
+    const runSelectedScenarios = async () => {
+      if (!selected?.relativePath || selectedScenarioIds.length === 0 || running) return;
+      const scenariosToRun = featureScenarios.filter((s) => selectedScenarioIds.includes(s.id));
+      if (scenariosToRun.length === 0) return;
+      setBatchProgress({ active: true, total: scenariosToRun.length, current: 0 });
+      for (let i = 0; i < scenariosToRun.length; i++) {
+        const scenario = scenariosToRun[i];
+        setBatchProgress({ active: true, total: scenariosToRun.length, current: i + 1 });
+        await runFeature({ featurePath: selected.relativePath, scenario });
+      }
+      setBatchProgress({ active: false, total: 0, current: 0 });
+      toast(`Ejecucion por lote finalizada (${scenariosToRun.length} escenarios)`);
     };
 
     const handleExportReport = (report, format = 'json') => {
@@ -1257,14 +1305,6 @@ export default function FeatureRunner() {
                    })()
                }
 
-              {/* Correr todos */}
-              <div className="mt-4 pt-3 border-t border-white/5">
-                       <button onClick={() => runFeature({ featurePath: null })} disabled={running}
-                   className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-violet-600/80 hover:bg-violet-500 disabled:opacity-40 text-white text-xs font-semibold transition-all">
-                   {running ? <Spinner size="sm" color="violet" /> : <Play size={12}/>}
-                   Correr todos
-                 </button>
-              </div>
             </div>
           </div>
 
@@ -1296,6 +1336,7 @@ export default function FeatureRunner() {
                     relativePath={selected?.relativePath}
                     initialContent={fileContent}
                     backendUrl={BACKEND_URL}
+                    jumpToLine={editorJump}
                     onSaved={(newContent) => {
                       setFileContent(newContent);
                       setFeatureScenarios(parseFeatureScenarios(newContent));
@@ -1305,16 +1346,68 @@ export default function FeatureRunner() {
 
                 {featureScenarios.length > 0 && (
                   <div className="card">
-                    <p className="card__title mb-3 text-xs">Escenarios del Feature ({featureScenarios.length})</p>
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <p className="card__title mb-0 text-xs">Escenarios del Feature ({featureScenarios.length})</p>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={toggleSelectAllScenarios}
+                          disabled={running}
+                          className="px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:text-white disabled:opacity-40 text-xs font-semibold transition-all"
+                        >
+                          {selectedScenarioIds.length === featureScenarios.length ? 'Quitar todos' : 'Seleccionar todos'}
+                        </button>
+                        <button
+                          onClick={runSelectedScenarios}
+                          disabled={running || selectedScenarioIds.length === 0}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/15 border border-blue-500/30 text-blue-300 hover:bg-blue-500/25 disabled:opacity-40 text-xs font-semibold transition-all"
+                        >
+                          {running && batchProgress.active ? <Spinner size="sm" /> : <Play size={11} />}
+                          Ejecutar seleccionados ({selectedScenarioIds.length})
+                        </button>
+                      </div>
+                    </div>
+                    {batchProgress.active && (
+                      <p className="text-[11px] text-slate-400 mb-2">
+                        Ejecutando lote: {batchProgress.current}/{batchProgress.total}
+                      </p>
+                    )}
                     <div className="space-y-2 max-h-64 overflow-y-auto">
                       {featureScenarios.map((scenario) => (
-                        <div key={scenario.id} className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-black/20 border border-white/10">
-                          <div className="min-w-0">
-                            <p className="text-xs text-slate-200 break-words">{scenario.name}</p>
-                            <p className="text-[10px] text-slate-500">Linea {scenario.line}</p>
+                        <div
+                          key={scenario.id}
+                          onDoubleClick={() => {
+                            setEditorJump({ line: Number(scenario.line) || null, nonce: Date.now() });
+                          }}
+                          className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-black/20 border border-white/10 cursor-pointer"
+                          title="Doble click para ir a la linea en el editor"
+                        >
+                          <div className="min-w-0 flex items-start gap-2">
+                            <input
+                              type="checkbox"
+                              checked={selectedScenarioIds.includes(scenario.id)}
+                              onChange={() => toggleScenarioSelection(scenario.id)}
+                              onDoubleClick={(e) => e.stopPropagation()}
+                              disabled={running}
+                              className="mt-1 accent-violet-500"
+                            />
+                            <div className="min-w-0">
+                              <p className="text-xs text-slate-200 break-words">{scenario.name}</p>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditorJump({ line: Number(scenario.line) || null, nonce: Date.now() });
+                                }}
+                                className="text-[10px] text-slate-500 hover:text-violet-300 transition-colors"
+                                title="Ir a la linea en el editor"
+                              >
+                                Linea {scenario.line}
+                              </button>
+                            </div>
                           </div>
                           <button
                             onClick={() => runFeature({ featurePath: selected.relativePath, scenario })}
+                            onDoubleClick={(e) => e.stopPropagation()}
                             disabled={running}
                             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-violet-500/15 border border-violet-500/30 text-violet-300 hover:bg-violet-500/25 disabled:opacity-40 text-xs font-semibold transition-all"
                             title="Ejecutar solo este escenario"
@@ -1348,9 +1441,6 @@ export default function FeatureRunner() {
                            env={env}
                            feature={selected}
                            selected={selected}
-                           onRunScenario={(scenario) => runFeature({ featurePath: selected.relativePath, scenario })}
-                           runningScenarioKey={runningScenarioKey}
-                           running={running}
                            onExport={handleExportReport}
                          />
                          <button

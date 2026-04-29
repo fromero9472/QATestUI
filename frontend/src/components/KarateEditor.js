@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
 import 'prismjs/themes/prism-tomorrow.css';
@@ -153,12 +153,12 @@ function summarizeStep(step) {
   if (lower.startsWith('path ')) return { label: 'Endpoint', value: text.replace(/^path\s+/i, '') };
   if (lower.startsWith('url ')) return { label: 'URL base', value: text.replace(/^url\s+/i, '') };
   if (lower.startsWith('header ')) return { label: 'Header', value: text.replace(/^header\s+/i, '') };
-  if (lower.startsWith('request')) return { label: 'Payload', value: 'Se envía un cuerpo JSON' };
-  if (lower.startsWith('method ')) return { label: 'Método HTTP', value: text.replace(/^method\s+/i, '').toUpperCase() };
+  if (lower.startsWith('request')) return { label: 'Payload', value: 'Se env�a un cuerpo JSON' };
+  if (lower.startsWith('method ')) return { label: 'M�todo HTTP', value: text.replace(/^method\s+/i, '').toUpperCase() };
   if (lower.startsWith('status ')) return { label: 'Estado esperado', value: text.replace(/^status\s+/i, '') };
-  if (lower.startsWith('match ')) return { label: 'Validación', value: text.replace(/^match\s+/i, '') };
+  if (lower.startsWith('match ')) return { label: 'Validaci�n', value: text.replace(/^match\s+/i, '') };
 
-  return { label: step.kind === 'star' ? 'Regla técnica' : step.keyword, value: text };
+  return { label: step.kind === 'star' ? 'Regla t�cnica' : step.keyword, value: text };
 }
 
 function FunctionalView({ code }) {
@@ -168,9 +168,9 @@ function FunctionalView({ code }) {
     <div className="p-4 space-y-4 bg-black/10">
       <div className="rounded-xl border border-white/10 bg-white/5 p-4">
         <p className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold mb-1">Feature</p>
-        <p className="text-sm font-semibold text-slate-100">{model.featureName || 'Sin título'}</p>
+        <p className="text-sm font-semibold text-slate-100">{model.featureName || 'Sin t�tulo'}</p>
         <p className="text-xs text-slate-400 mt-1">
-          {model.scenarios.length} escenario(s) · {model.background.length} regla(s) de contexto
+          {model.scenarios.length} escenario(s) � {model.background.length} regla(s) de contexto
         </p>
       </div>
 
@@ -219,13 +219,14 @@ function FunctionalView({ code }) {
   );
 }
 
-export default function KarateEditor({ relativePath, initialContent, backendUrl, onSaved }) {
+export default function KarateEditor({ relativePath, initialContent, backendUrl, onSaved, jumpToLine }) {
   const [code, setCode] = useState(initialContent || '');
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState(null);
   const [mode, setMode] = useState('edit'); // edit | code | functional
   const [copied, setCopied] = useState(false);
+  const editorHostRef = useRef(null);
 
   useEffect(() => {
     setCode(initialContent || '');
@@ -285,6 +286,46 @@ export default function KarateEditor({ relativePath, initialContent, backendUrl,
     return () => window.removeEventListener('keydown', onKey);
   }, [handleSave]);
 
+  useEffect(() => {
+    const targetLine = Number(jumpToLine?.line);
+    if (!targetLine || targetLine < 1) return;
+
+    setMode('edit');
+    let attempts = 0;
+    const maxAttempts = 20;
+    const jump = () => {
+      const textarea = editorHostRef.current?.querySelector('textarea');
+      if (!textarea) return;
+
+      const lines = code.split('\n');
+      const clampedLine = Math.min(targetLine, Math.max(lines.length, 1));
+      let cursorPos = 0;
+      for (let i = 0; i < clampedLine - 1; i += 1) {
+        cursorPos += (lines[i] || '').length + 1;
+      }
+
+      textarea.focus();
+      textarea.setSelectionRange(cursorPos, cursorPos);
+
+      const computedLineHeight = parseFloat(window.getComputedStyle(textarea).lineHeight) || 20;
+      const scrollTop = Math.max((clampedLine - 3) * computedLineHeight, 0);
+      textarea.scrollTop = scrollTop;
+      if (editorHostRef.current) editorHostRef.current.scrollTop = scrollTop;
+    };
+
+    const tryJump = () => {
+      attempts += 1;
+      const textarea = editorHostRef.current?.querySelector('textarea');
+      if (!textarea && attempts < maxAttempts) {
+        setTimeout(tryJump, 30);
+        return;
+      }
+      jump();
+    };
+
+    requestAnimationFrame(tryJump);
+  }, [jumpToLine, code]);
+
   const highlight = (c) => Prism.highlight(c, Prism.languages.karate, 'karate');
 
   return (
@@ -320,7 +361,7 @@ export default function KarateEditor({ relativePath, initialContent, backendUrl,
               onClick={() => setMode('code')}
               className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all ${mode === 'code' ? 'bg-violet-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
             >
-              <Code2 size={10} /> Código
+              <Code2 size={10} /> Codigo
             </button>
             <button
               onClick={() => setMode('functional')}
@@ -350,7 +391,7 @@ export default function KarateEditor({ relativePath, initialContent, backendUrl,
         </div>
       </div>
 
-      <div className="overflow-auto" style={{ maxHeight: '460px', backgroundColor: '#1a1b26' }}>
+      <div ref={editorHostRef} className="overflow-auto" style={{ maxHeight: '460px', backgroundColor: '#1a1b26' }}>
         {mode === 'edit' && (
           <Editor
             value={code}
@@ -375,8 +416,9 @@ export default function KarateEditor({ relativePath, initialContent, backendUrl,
 
       <div className="flex items-center justify-between px-4 py-1.5 border-t border-white/5 bg-black/20">
         <span className="text-[10px] text-slate-600 font-mono">Karate DSL</span>
-        <span className="text-[10px] text-slate-600">{code.split('\n').length} lineas · {code.length} chars</span>
+        <span className="text-[10px] text-slate-600">{code.split('\n').length} lineas � {code.length} chars</span>
       </div>
     </div>
   );
 }
+
