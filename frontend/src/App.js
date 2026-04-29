@@ -211,6 +211,10 @@ function AppInner() {
   };
 
   const handleReset = () => { setForm(initialForm); setOutput(null); setErrors([]); };
+  const handleSendToRunner = () => {
+    localStorage.setItem('qatestui_confluence_import', JSON.stringify(form));
+    setActiveTab('runner');
+  };
 
   const handleSmartFill = (parsed) => {
     setForm((prev) => {
@@ -421,7 +425,12 @@ function AppInner() {
               onSubmit={handleSubmit}
             />
           ) : (
-            <FeatureOutput output={output} onDownload={handleDownload} onReset={handleReset} />
+            <FeatureOutput
+              output={output}
+              onDownload={handleDownload}
+              onReset={handleReset}
+              onSendToRunner={handleSendToRunner}
+            />
           )
         )}
         {activeTab === 'runner' && <FeatureRunner />}
